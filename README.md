@@ -99,7 +99,7 @@ fi
 
 ```bash
 # Monitor database creation, fail fast on errors
-vapordb create --cloud aws --db mysql 2>&1 | \
+mist create --cloud aws --db mysql 2>&1 | \
   tee /tmp/db_create.log | \
   earlyexit -t 1800 'Error|Failed|Exception'
 
