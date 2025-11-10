@@ -3,9 +3,9 @@ requires = ["setuptools>=45", "setuptools-scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "failfast"
-version = "0.1.0"
-description = "Fast-fail pattern matching for command output with early error detection"
+name = "earlyexit"
+version = "0.0.1"
+description = "Early exit pattern matching for command output with fast error detection"
 authors = [
     {name = "Robert Lee", email = "robert.lee@databricks.com"}
 ]
@@ -35,16 +35,16 @@ dependencies = []
 perl = ["regex"]  # For Perl-compatible regex (-P flag)
 
 [project.scripts]
-failfast = "failfast.cli:main"
+earlyexit = "earlyexit.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/robert-lee/failfast"
-Repository = "https://github.com/robert-lee/failfast"
-"Bug Tracker" = "https://github.com/robert-lee/failfast/issues"
+Homepage = "https://github.com/rsleedbx/earlyexit"
+Repository = "https://github.com/rsleedbx/earlyexit"
+"Bug Tracker" = "https://github.com/rsleedbx/earlyexit/issues"
 
 [tool.setuptools]
-packages = ["failfast"]
+packages = ["earlyexit"]
 
 [tool.setuptools.package-data]
-failfast = ["py.typed"]
+earlyexit = ["py.typed"]
 

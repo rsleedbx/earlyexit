@@ -1,12 +1,12 @@
-# failfast 🚀
+# earlyexit 🚀
 
-**Fast-fail pattern matching for command output** - Exit immediately when a pattern is matched, with timeout support.
+**Early exit pattern matching for command output** - Exit immediately when a pattern is matched, with timeout support.
 
 Implements the **early error detection pattern** for faster feedback during long-running commands, CI/CD pipelines, and log monitoring.
 
 ## 🎯 Purpose
 
-Traditional `grep` processes the entire input stream. `failfast` exits **immediately** on the first match, saving time and providing instant feedback for errors.
+Traditional `grep` processes the entire input stream. `earlyexit` exits **immediately** on the first match, saving time and providing instant feedback for errors.
 
 Perfect for:
 - 🔧 Long-running build processes
@@ -19,11 +19,11 @@ Perfect for:
 
 ```bash
 # Install from PyPI (when published)
-pip install failfast
+pip install earlyexit
 
 # Install from source
-git clone https://github.com/robert-lee/failfast
-cd failfast
+git clone https://github.com/rsleedbx/earlyexit
+cd earlyexit
 pip install -e .
 
 # With Perl-compatible regex support
@@ -34,22 +34,22 @@ pip install -e ".[perl]"
 
 ```bash
 # Exit immediately on first error (with 30s timeout)
-long_running_command | failfast -t 30 'Error|Failed'
+long_running_command | earlyexit -t 30 'Error|Failed'
 
 # Monitor Terraform apply
-terraform apply | failfast -t 600 -i 'error'
+terraform apply | earlyexit -t 600 -i 'error'
 
 # Stop after 3 test failures
-pytest | failfast -m 3 'FAILED'
+pytest | earlyexit -m 3 'FAILED'
 
 # Check if service is healthy (invert match)
-health_check_loop | failfast -v 'OK' -t 10
+health_check_loop | earlyexit -v 'OK' -t 10
 ```
 
 ## 📚 Usage
 
 ```
-failfast [OPTIONS] PATTERN
+earlyexit [OPTIONS] PATTERN
 
 Arguments:
   PATTERN                Regular expression pattern to match
@@ -82,7 +82,7 @@ Exit Codes:
 # Exit immediately on error, 10min timeout
 terraform apply -auto-approve 2>&1 | \
   stdbuf -o0 tee terraform.log | \
-  failfast -t 600 -i 'error'
+  earlyexit -t 600 -i 'error'
 
 if [ $? -eq 0 ]; then
   echo "❌ Terraform failed - check terraform.log"
@@ -101,7 +101,7 @@ fi
 # Monitor database creation, fail fast on errors
 vapordb create --cloud aws --db mysql 2>&1 | \
   tee /tmp/db_create.log | \
-  failfast -t 1800 'Error|Failed|Exception'
+  earlyexit -t 1800 'Error|Failed|Exception'
 
 case $? in
   0) echo "❌ Database creation failed"; exit 1 ;;
@@ -114,7 +114,7 @@ esac
 
 ```bash
 # Stop after 5 test failures
-pytest -v | failfast -m 5 'FAILED'
+pytest -v | earlyexit -m 5 'FAILED'
 
 if [ $? -eq 0 ]; then
   echo "❌ Tests failed - stopping early"
@@ -128,7 +128,7 @@ fi
 # Monitor build output for errors
 ./build.sh 2>&1 | \
   stdbuf -o0 tee build.log | \
-  failfast -t 3600 -iE '(error|fatal|exception)'
+  earlyexit -t 3600 -iE '(error|fatal|exception)'
 
 exit $?  # Propagate exit code
 ```
@@ -138,7 +138,7 @@ exit $?  # Propagate exit code
 ```bash
 # Monitor application logs in real-time
 tail -f /var/log/app.log | \
-  failfast -t 300 -i 'error|exception|fatal'
+  earlyexit -t 300 -i 'error|exception|fatal'
 
 if [ $? -eq 0 ]; then
   echo "🚨 Error detected in logs!"
@@ -154,7 +154,7 @@ fi
 while true; do
   curl -s http://localhost:8080/health
   sleep 1
-done | failfast -v 'OK' -t 60
+done | earlyexit -v 'OK' -t 60
 
 if [ $? -eq 0 ]; then
   echo "❌ Health check failed - 'OK' not found"
@@ -166,14 +166,14 @@ fi
 
 ```bash
 # Match any of several error conditions
-app_command | failfast -E '(ERROR|FATAL|EXCEPTION|SEGFAULT|PANIC)'
+app_command | earlyexit -E '(ERROR|FATAL|EXCEPTION|SEGFAULT|PANIC)'
 ```
 
 ### Example 8: With Line Numbers
 
 ```bash
 # Show line numbers for matched errors
-long_log_file | failfast -n -i 'error'
+long_log_file | earlyexit -n -i 'error'
 # Output: 1234:ERROR: Connection failed
 ```
 
@@ -185,31 +185,31 @@ Uses Python's `re` module (similar to `grep -E`):
 
 ```bash
 # Multiple alternatives
-failfast 'error|warning|fatal'
+earlyexit 'error|warning|fatal'
 
 # Character classes
-failfast '[Ee]rror'
+earlyexit '[Ee]rror'
 
 # Quantifiers
-failfast 'fail(ed|ure)?'
+earlyexit 'fail(ed|ure)?'
 
 # Word boundaries
-failfast '\berror\b'
+earlyexit '\berror\b'
 ```
 
 ### Perl-Compatible Regex (-P)
 
-Requires `regex` module (`pip install failfast[perl]`):
+Requires `regex` module (`pip install earlyexit[perl]`):
 
 ```bash
 # Lookaheads/lookbehinds
-failfast -P '(?<=ERROR: ).*'
+earlyexit -P '(?<=ERROR: ).*'
 
 # Named groups
-failfast -P '(?P<level>ERROR|WARN): (?P<msg>.*)'
+earlyexit -P '(?P<level>ERROR|WARN): (?P<msg>.*)'
 
 # Recursive patterns
-failfast -P '\(((?:[^()]++|(?R))*+)\)'
+earlyexit -P '\(((?:[^()]++|(?R))*+)\)'
 ```
 
 ## 🎯 Use Cases
@@ -221,7 +221,7 @@ Stop the build immediately on first error instead of waiting for full completion
 ```yaml
 # GitLab CI example
 script:
-  - make build 2>&1 | failfast -t 3600 'error' || exit 1
+  - make build 2>&1 | earlyexit -t 3600 'error' || exit 1
 ```
 
 ### 2. **Cost Optimization**
@@ -230,7 +230,7 @@ Save compute costs by stopping failed cloud operations early:
 
 ```bash
 # Stop provisioning if errors detected in first 5 minutes
-terraform apply | failfast -t 300 'Error:' && terraform destroy -auto-approve
+terraform apply | earlyexit -t 300 'Error:' && terraform destroy -auto-approve
 ```
 
 ### 3. **Development Workflow**
@@ -239,7 +239,7 @@ Get instant feedback during development:
 
 ```bash
 # Watch for compilation errors
-npm run watch | failfast 'ERROR'
+npm run watch | earlyexit 'ERROR'
 ```
 
 ### 4. **Monitoring & Alerting**
@@ -248,7 +248,7 @@ Detect issues in production logs:
 
 ```bash
 # Alert on first critical error
-kubectl logs -f pod-name | failfast 'CRITICAL' && send-alert
+kubectl logs -f pod-name | earlyexit 'CRITICAL' && send-alert
 ```
 
 ## ⚡ Performance Comparison
@@ -257,7 +257,7 @@ kubectl logs -f pod-name | failfast 'CRITICAL' && send-alert
 |------|----------|---------------------|
 | `grep` | Processes entire input | After full completion |
 | `grep -m 1` | Stops after first match | Immediate (but no timeout) |
-| **`failfast`** | Stops after first match + timeout | **Immediate + safety net** |
+| **`earlyexit`** | Stops after first match + timeout | **Immediate + safety net** |
 
 ### Real-World Example
 
@@ -267,8 +267,8 @@ kubectl logs -f pod-name | failfast 'CRITICAL' && send-alert
 # grep: Waits full 30 minutes
 command | grep 'Error'  # 30 minutes wasted
 
-# failfast: Exits at 5 minutes
-command | failfast -t 1800 'Error'  # Saves 25 minutes!
+# earlyexit: Exits at 5 minutes
+command | earlyexit -t 1800 'Error'  # Saves 25 minutes!
 ```
 
 ## 🔧 Integration with Other Tools
@@ -276,44 +276,44 @@ command | failfast -t 1800 'Error'  # Saves 25 minutes!
 ### With `tee` (save logs + monitor)
 
 ```bash
-command 2>&1 | stdbuf -o0 tee output.log | failfast -t 300 'Error'
+command 2>&1 | stdbuf -o0 tee output.log | earlyexit -t 300 'Error'
 ```
 
 ### With `timeout` (double safety)
 
 ```bash
 timeout 600 bash << 'EOF'
-  command 2>&1 | stdbuf -o0 tee log.txt | failfast -t 300 'Error'
+  command 2>&1 | stdbuf -o0 tee log.txt | earlyexit -t 300 'Error'
 EOF
 ```
 
 ### With `stdbuf` (unbuffered output)
 
 ```bash
-command 2>&1 | stdbuf -o0 tee log.txt | failfast 'Error'
+command 2>&1 | stdbuf -o0 tee log.txt | earlyexit 'Error'
 ```
 
 ## 🧪 Testing
 
 ```bash
 # Test success (no match)
-echo "Starting..." | failfast 'Error'  # Exit 1
+echo "Starting..." | earlyexit 'Error'  # Exit 1
 
 # Test match (immediate exit)
-echo "Error detected" | failfast 'Error'  # Exit 0
+echo "Error detected" | earlyexit 'Error'  # Exit 0
 
 # Test timeout
-sleep 10 | failfast -t 2 'Error'  # Exit 2 after 2 seconds
+sleep 10 | earlyexit -t 2 'Error'  # Exit 2 after 2 seconds
 
 # Test case-insensitive
-echo "ERROR" | failfast -i 'error'  # Exit 0
+echo "ERROR" | earlyexit -i 'error'  # Exit 0
 
 # Test max count
-printf "Error\nError\nError\n" | failfast -m 2 'Error'  # Exit 0 after 2 matches
+printf "Error\nError\nError\n" | earlyexit -m 2 'Error'  # Exit 0 after 2 matches
 
 # Test invert match
-echo "OK" | failfast -v 'Error'  # Exit 1 (OK is not Error)
-echo "Error" | failfast -v 'OK'  # Exit 0 (Error doesn't match OK)
+echo "OK" | earlyexit -v 'Error'  # Exit 1 (OK is not Error)
+echo "Error" | earlyexit -v 'OK'  # Exit 0 (Error doesn't match OK)
 ```
 
 ## 📊 Exit Codes
@@ -328,7 +328,7 @@ echo "Error" | failfast -v 'OK'  # Exit 0 (Error doesn't match OK)
 
 ## 🔄 Comparison with grep
 
-| Feature | grep | grep -m 1 | **failfast** |
+| Feature | grep | grep -m 1 | **earlyexit** |
 |---------|------|-----------|--------------|
 | Pattern matching | ✅ | ✅ | ✅ |
 | Extended regex | ✅ -E | ✅ -E | ✅ -E |
@@ -347,56 +347,56 @@ echo "Error" | failfast -v 'OK'  # Exit 0 (Error doesn't match OK)
 
 ```bash
 # Test your pattern separately
-echo "test string" | failfast 'pattern'
+echo "test string" | earlyexit 'pattern'
 
 # Enable line numbers to see what's being processed
-command | failfast -n 'pattern'
+command | earlyexit -n 'pattern'
 
 # Use -i for case-insensitive if needed
-command | failfast -i 'pattern'
+command | earlyexit -i 'pattern'
 ```
 
 ### Timeout not working?
 
 ```bash
 # Ensure timeout is numeric
-failfast -t 10 'pattern'  # ✅ Correct
-failfast -t 10s 'pattern'  # ❌ Wrong - no 's' suffix
+earlyexit -t 10 'pattern'  # ✅ Correct
+earlyexit -t 10s 'pattern'  # ❌ Wrong - no 's' suffix
 ```
 
 ### Buffering issues?
 
 ```bash
 # Use stdbuf to disable buffering
-command 2>&1 | stdbuf -o0 tee log.txt | failfast 'pattern'
+command 2>&1 | stdbuf -o0 tee log.txt | earlyexit 'pattern'
 ```
 
 ## 🎓 Best Practices
 
 1. **Always use timeout** for long-running commands:
    ```bash
-   command | failfast -t 600 'Error'  # ✅ Good
-   command | failfast 'Error'          # ⚠️ Risky - no timeout
+   command | earlyexit -t 600 'Error'  # ✅ Good
+   command | earlyexit 'Error'          # ⚠️ Risky - no timeout
    ```
 
 2. **Save logs with tee**:
    ```bash
-   command 2>&1 | stdbuf -o0 tee log.txt | failfast -t 300 'Error'
+   command 2>&1 | stdbuf -o0 tee log.txt | earlyexit -t 300 'Error'
    ```
 
 3. **Use case-insensitive** for error detection:
    ```bash
-   failfast -i 'error'  # Matches Error, ERROR, error
+   earlyexit -i 'error'  # Matches Error, ERROR, error
    ```
 
 4. **Multiple patterns** with extended regex:
    ```bash
-   failfast -E '(error|warning|fatal|exception)'
+   earlyexit -E '(error|warning|fatal|exception)'
    ```
 
 5. **Check exit codes** properly:
    ```bash
-   command | failfast 'Error'
+   command | earlyexit 'Error'
    case $? in
      0) echo "Error detected"; exit 1 ;;
      1) echo "Success" ;;

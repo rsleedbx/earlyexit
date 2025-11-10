@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Tests for failfast CLI tool
+Tests for earlyexit CLI tool
 """
 
 import subprocess
@@ -8,9 +8,9 @@ import time
 import pytest
 
 
-def run_failfast(input_text, args=None, timeout=None):
-    """Helper to run failfast with given input and arguments"""
-    cmd = ['python3', '-m', 'failfast.cli']
+def run_earlyexit(input_text, args=None, timeout=None):
+    """Helper to run earlyexit with given input and arguments"""
+    cmd = ['python3', '-m', 'earlyexit.cli']
     if args:
         cmd.extend(args)
     
@@ -35,25 +35,25 @@ class TestBasicMatching:
     
     def test_match_found(self):
         """Test that matching pattern returns exit code 0"""
-        code, stdout, stderr = run_failfast("Error detected\n", ['Error'])
+        code, stdout, stderr = run_earlyexit("Error detected\n", ['Error'])
         assert code == 0, "Should return 0 when pattern matches"
         assert "Error detected" in stdout
     
     def test_no_match(self):
         """Test that non-matching pattern returns exit code 1"""
-        code, stdout, stderr = run_failfast("Success\n", ['Error'])
+        code, stdout, stderr = run_earlyexit("Success\n", ['Error'])
         assert code == 1, "Should return 1 when pattern doesn't match"
         assert "Success" in stdout
     
     def test_partial_match(self):
         """Test that partial matches work"""
-        code, stdout, stderr = run_failfast("The error occurred here\n", ['error'])
+        code, stdout, stderr = run_earlyexit("The error occurred here\n", ['error'])
         assert code == 0, "Should match partial string"
     
     def test_multiple_lines_exit_on_first(self):
         """Test that we exit on first match, not processing rest"""
         input_text = "line1\nerror\nline3\nline4\n"
-        code, stdout, stderr = run_failfast(input_text, ['error'])
+        code, stdout, stderr = run_earlyexit(input_text, ['error'])
         assert code == 0
         # Should include line1 (passed through) and error (matched)
         # but not line3 or line4 (early exit)
@@ -67,18 +67,18 @@ class TestOptions:
     
     def test_ignore_case(self):
         """Test -i flag for case-insensitive matching"""
-        code, stdout, stderr = run_failfast("ERROR\n", ['-i', 'error'])
+        code, stdout, stderr = run_earlyexit("ERROR\n", ['-i', 'error'])
         assert code == 0, "Should match with case-insensitive flag"
     
     def test_case_sensitive_default(self):
         """Test that matching is case-sensitive by default"""
-        code, stdout, stderr = run_failfast("ERROR\n", ['error'])
+        code, stdout, stderr = run_earlyexit("ERROR\n", ['error'])
         assert code == 1, "Should not match without -i flag"
     
     def test_max_count(self):
         """Test -m flag for maximum match count"""
         input_text = "error1\nerror2\nerror3\n"
-        code, stdout, stderr = run_failfast(input_text, ['-m', '2', 'error'])
+        code, stdout, stderr = run_earlyexit(input_text, ['-m', '2', 'error'])
         assert code == 0
         assert "error1" in stdout
         assert "error2" in stdout
@@ -86,24 +86,24 @@ class TestOptions:
     
     def test_quiet_mode(self):
         """Test -q flag suppresses output"""
-        code, stdout, stderr = run_failfast("Error\n", ['-q', 'Error'])
+        code, stdout, stderr = run_earlyexit("Error\n", ['-q', 'Error'])
         assert code == 0
         assert stdout == "", "Quiet mode should suppress stdout"
     
     def test_line_number(self):
         """Test -n flag adds line numbers"""
-        code, stdout, stderr = run_failfast("line1\nerror\n", ['-n', 'error'])
+        code, stdout, stderr = run_earlyexit("line1\nerror\n", ['-n', 'error'])
         assert code == 0
         assert "2:error" in stdout, "Should show line number"
     
     def test_invert_match(self):
         """Test -v flag inverts matching"""
         # "Error" does NOT match "OK" when inverted
-        code, stdout, stderr = run_failfast("Error\n", ['-v', 'OK'])
+        code, stdout, stderr = run_earlyexit("Error\n", ['-v', 'OK'])
         assert code == 0, "Inverted match should succeed when pattern doesn't match"
         
         # "OK" does match "OK" when inverted (confusing but correct grep behavior)
-        code, stdout, stderr = run_failfast("OK\n", ['-v', 'Error'])
+        code, stdout, stderr = run_earlyexit("OK\n", ['-v', 'Error'])
         assert code == 0, "Inverted match: 'OK' doesn't match 'Error'"
 
 
@@ -112,20 +112,20 @@ class TestRegex:
     
     def test_simple_regex(self):
         """Test simple regex pattern"""
-        code, stdout, stderr = run_failfast("Error123\n", ['Error[0-9]+'])
+        code, stdout, stderr = run_earlyexit("Error123\n", ['Error[0-9]+'])
         assert code == 0
     
     def test_alternation(self):
         """Test regex alternation (Error|Warning)"""
-        code, stdout, stderr = run_failfast("Warning detected\n", ['Error|Warning'])
+        code, stdout, stderr = run_earlyexit("Warning detected\n", ['Error|Warning'])
         assert code == 0
     
     def test_character_class(self):
         """Test character class [Ee]rror"""
-        code, stdout, stderr = run_failfast("error\n", ['[Ee]rror'])
+        code, stdout, stderr = run_earlyexit("error\n", ['[Ee]rror'])
         assert code == 0
         
-        code, stdout, stderr = run_failfast("Error\n", ['[Ee]rror'])
+        code, stdout, stderr = run_earlyexit("Error\n", ['[Ee]rror'])
         assert code == 0
 
 
@@ -135,7 +135,7 @@ class TestTimeout:
     def test_timeout_with_slow_input(self):
         """Test that timeout works (exit code 2)"""
         # Create a process that will timeout
-        cmd = ['python3', '-m', 'failfast.cli', '-t', '1', 'Error']
+        cmd = ['python3', '-m', 'earlyexit.cli', '-t', '1', 'Error']
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -159,19 +159,19 @@ class TestEdgeCases:
     
     def test_empty_input(self):
         """Test with empty input"""
-        code, stdout, stderr = run_failfast("", ['Error'])
+        code, stdout, stderr = run_earlyexit("", ['Error'])
         assert code == 1, "No input means no match"
     
     def test_invalid_regex(self):
         """Test with invalid regex pattern"""
-        code, stdout, stderr = run_failfast("test\n", ['['])
+        code, stdout, stderr = run_earlyexit("test\n", ['['])
         assert code == 3, "Invalid regex should return exit code 3"
         assert "Invalid regex" in stderr or "Error" in stderr
     
     def test_broken_pipe(self):
         """Test handling of broken pipe (e.g., piped to head)"""
-        # This simulates: echo "test" | failfast 'test' | head -n 0
-        cmd = ['python3', '-m', 'failfast.cli', 'test']
+        # This simulates: echo "test" | earlyexit 'test' | head -n 0
+        cmd = ['python3', '-m', 'earlyexit.cli', 'test']
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -202,7 +202,7 @@ Initializing provider plugins...
 Downloading terraform-provider-aws...
 Error: Failed to load plugin schemas
 """
-        code, stdout, stderr = run_failfast(
+        code, stdout, stderr = run_earlyexit(
             terraform_output,
             ['-i', 'error']
         )
@@ -215,7 +215,7 @@ test_one.py::test_func1 PASSED
 test_one.py::test_func2 FAILED
 test_one.py::test_func3 PASSED
 """
-        code, stdout, stderr = run_failfast(
+        code, stdout, stderr = run_earlyexit(
             pytest_output,
             ['FAILED']
         )
@@ -231,7 +231,7 @@ test_one.py::test_func3 PASSED
 2024-11-10 10:00:02 ERROR Connection timeout
 2024-11-10 10:00:03 INFO Retrying...
 """
-        code, stdout, stderr = run_failfast(
+        code, stdout, stderr = run_earlyexit(
             log_output,
             ['-iE', 'error|exception|fatal']
         )
