@@ -4,35 +4,35 @@ Automated version bumping and PyPI upload for earlyexit.
 
 ## Quick Start
 
-### Option 1: Automatic Release (Recommended)
+### Recommended: Automated Release with release_version.sh
 
 ```bash
-# Bump patch version and release to PyPI
-bin/release.sh --bump patch
+# Release specific version to PyPI
+./bin/release_version.sh 0.0.3
 
-# Bump minor version and release
-bin/release.sh --bump minor
+# Test with TestPyPI first (recommended)
+./bin/release_version.sh 0.0.3 --test
 
-# Bump major version and release
-bin/release.sh --bump major
+# Quick release without prompts
+./bin/release_version.sh 0.0.3 -y
+
+# Skip specific steps
+./bin/release_version.sh 0.0.3 --skip-tests      # Skip tests
+./bin/release_version.sh 0.0.3 --skip-push       # Don't push to GitHub
+./bin/release_version.sh 0.0.3 --skip-upload     # Only tag and build
 ```
 
-### Option 2: Manual Version Bump
+### Alternative: Using bump types with publish scripts
 
 ```bash
-# 1. Bump version
-python3 bump_version.py patch
+# Bump patch version and release (0.0.2 → 0.0.3)
+./bin/publish patch
 
-# 2. Commit and tag
-git add -A
-git commit -m "Bump version to X.Y.Z"
-git tag vX.Y.Z
+# Bump minor version and release (0.0.2 → 0.1.0)
+./bin/publish minor
 
-# 3. Push
-git push && git push --tags
-
-# 4. Release
-bin/release.sh
+# Bump major version and release (0.0.2 → 1.0.0)
+./bin/publish major
 ```
 
 ## Version Bumping
@@ -80,51 +80,52 @@ python3 bump_version.py patch --dry-run
 ✨ Successfully bumped version: 0.0.1 → 0.0.2
 ```
 
-## Release Script
+## Release Scripts
 
-The `release.sh` script automates the entire release workflow.
+### release_version.sh (Recommended)
 
-### Basic Usage
+The `release_version.sh` script automates the entire release workflow with explicit version control.
+
+**Basic Usage:**
 
 ```bash
-# Release current version
-bin/release.sh
+# Release specific version to PyPI
+./bin/release_version.sh 0.0.3
 
-# Bump and release in one command
-bin/release.sh --bump patch
+# Test with TestPyPI first
+./bin/release_version.sh 0.0.3 --test
 
-# Set version and release
-bin/release.sh --version 1.0.0
+# Quick release (no prompts)
+./bin/release_version.sh 0.0.3 -y
 
-# Release to TestPyPI (for testing)
-bin/release.sh --test
-
-# Skip interactive prompts
-bin/release.sh --bump patch -y
+# Skip specific steps
+./bin/release_version.sh 0.0.3 --skip-tests
+./bin/release_version.sh 0.0.3 --skip-push
+./bin/release_version.sh 0.0.3 --skip-upload
 ```
 
-### Options
+**Options:**
 
 | Option | Description |
 |--------|-------------|
-| `--bump TYPE` | Bump version (major\|minor\|patch) |
-| `--version X.Y.Z` | Set explicit version |
+| `VERSION` | Required: version number (e.g., 0.0.3) |
 | `--test` | Upload to TestPyPI instead of PyPI |
 | `--skip-tests` | Skip running tests |
+| `--skip-push` | Skip pushing to GitHub |
+| `--skip-upload` | Skip PyPI upload (only tag and build) |
 | `-y, --yes` | Auto-yes to all prompts |
 | `-h, --help` | Show help |
 
-### What release.sh Does
+**What release_version.sh Does:**
 
-1. ✅ **Version Check** - Shows current version
-2. ✅ **Bump Version** (if requested) - Updates files
-3. ✅ **Git Commit & Tag** (if bumped) - Commits version change
-4. ✅ **Check Status** - Warns about uncommitted changes
-5. ✅ **Run Tests** (optional) - Runs pytest if available
-6. ✅ **Clean Builds** - Removes old dist/ files
+1. ✅ **Validate Version** - Ensures X.Y.Z format
+2. ✅ **Check Git Status** - Warns about uncommitted changes
+3. ✅ **Update Version** - Updates 3 files (pyproject.toml, __init__.py, cli.py)
+4. ✅ **Run Tests** - Runs pytest (unless --skip-tests)
+5. ✅ **Git Commit & Tag** - Commits version change
+6. ✅ **Push to GitHub** - Pushes commit and tag (unless --skip-push)
 7. ✅ **Build Package** - Creates wheel and source dist
-8. ✅ **Upload to PyPI** - Publishes package
-9. ✅ **Push to Git** (optional) - Pushes tags to remote
+8. ✅ **Upload to PyPI** - Publishes package (unless --skip-upload)
 
 ## Complete Workflows
 
@@ -132,26 +133,30 @@ bin/release.sh --bump patch -y
 
 ```bash
 # One command does it all
-bin/release.sh --bump patch -y
+./bin/release_version.sh 0.0.3 -y
 
 # What happens:
-# 1. 0.0.1 → 0.0.2
-# 2. Updates files
-# 3. Commits & tags
-# 4. Builds package
-# 5. Uploads to PyPI
-# 6. Pushes to git
+# 1. Updates version: 0.0.2 → 0.0.3
+# 2. Updates all 3 files (pyproject.toml, __init__.py, cli.py)
+# 3. Runs tests
+# 4. Commits & tags
+# 5. Pushes to GitHub
+# 6. Builds package
+# 7. Uploads to PyPI
 ```
 
-### Workflow 2: Minor Release (New Features)
+### Workflow 2: Test Release (Recommended Before Production)
 
 ```bash
-bin/release.sh --bump minor
+# 1. Test on TestPyPI first
+./bin/release_version.sh 0.1.0 --test
 
-# Interactive prompts:
-# - Commit version bump? (y/n)
-# - Continue with upload? (y/n)
-# - Push to git remote? (y/n)
+# 2. Verify installation works
+pip install --index-url https://test.pypi.org/simple/ earlyexit==0.1.0
+earlyexit --version
+
+# 3. If good, release to production PyPI
+./bin/release_version.sh 0.1.0
 ```
 
 ### Workflow 3: Major Release (Breaking Changes)

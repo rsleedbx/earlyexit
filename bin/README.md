@@ -206,7 +206,7 @@ bin/publish patch
 
 ## See Also
 
-- `bump_version.py` - Version bumping tool
-- `release.sh` - Full-featured release script with options
-- `VERSION_MANAGEMENT.md` - Complete release documentation
+- `bump_version.py` - Version bumping tool (used by `publish` scripts)
+- `release_version.sh` - Complete release automation (recommended)
+- `docs/learnings/VERSION_MANAGEMENT.md` - Complete release documentation
 
