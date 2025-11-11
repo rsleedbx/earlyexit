@@ -915,7 +915,7 @@ Exit codes:
                        help='Source file being processed (for telemetry, auto-detected if possible)')
     parser.add_argument('--auto-tune', action='store_true',
                        help='Automatically select optimal parameters based on telemetry (experimental)')
-    parser.add_argument('--version', action='version', version='%(prog)s 0.0.1')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.0.2')
     
     # Pre-process sys.argv to handle optional pattern when timeout is provided
     # If we have timeout options and '--' separator but no pattern before it, insert 'NONE'

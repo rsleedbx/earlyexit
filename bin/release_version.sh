@@ -215,6 +215,7 @@ echo ""
 info "Step 1: Updating version in files..."
 update_version_in_file "pyproject.toml" "$NEW_VERSION" '^\(version = "\)[^"]*\("\)'
 update_version_in_file "earlyexit/__init__.py" "$NEW_VERSION" '^\(__version__ = "\)[^"]*\("\)'
+update_version_in_file "earlyexit/cli.py" "$NEW_VERSION" "^\(.*version='%(prog)s \)[^']*\('\)"
 
 # Step 2: Run tests
 if [ "$SKIP_TESTS" = false ]; then
@@ -237,7 +238,7 @@ fi
 # Step 3: Commit and tag
 echo ""
 info "Step 3: Committing and tagging..."
-git add pyproject.toml earlyexit/__init__.py
+git add pyproject.toml earlyexit/__init__.py earlyexit/cli.py
 git commit -m "Release v$NEW_VERSION"
 git tag -a "v$NEW_VERSION" -m "Release v$NEW_VERSION"
 success "Committed and tagged v$NEW_VERSION"
