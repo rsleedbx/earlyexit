@@ -1,0 +1,66 @@
+#!/bin/bash
+# Test publish script for earlyexit (uploads to TestPyPI)
+# Usage: bin/publish-test [patch|minor|major]
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info() { echo -e "${BLUE}→${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+warning() { echo -e "${YELLOW}⚠${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
+
+# Get to project root
+cd "$(dirname "$0")/.."
+
+# Check arguments
+BUMP_TYPE="${1:-patch}"
+
+if [[ ! "$BUMP_TYPE" =~ ^(major|minor|patch|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    error "Invalid bump type: $BUMP_TYPE"
+    echo "Usage: bin/publish-test [patch|minor|major|X.Y.Z]"
+    exit 1
+fi
+
+# Get current version
+CURRENT_VERSION=$(python3 -c "import re; print(re.search(r'version = \"([\d.]+)\"', open('pyproject.toml').read()).group(1))")
+info "Current version: $CURRENT_VERSION"
+
+# Bump version
+info "Bumping version: $BUMP_TYPE"
+python3 bump_version.py "$BUMP_TYPE" || error "Version bump failed"
+
+# Get new version
+NEW_VERSION=$(python3 -c "import re; print(re.search(r'version = \"([\d.]+)\"', open('pyproject.toml').read()).group(1))")
+success "New version: $NEW_VERSION"
+
+# Clean old builds
+info "Cleaning old builds..."
+rm -rf build/ dist/ *.egg-info
+
+# Build
+info "Building package..."
+python3 -m build || error "Build failed"
+success "Package built"
+
+# Upload to TestPyPI
+warning "Uploading to TestPyPI (test.pypi.org)..."
+python3 -m twine upload --repository testpypi dist/* || error "Upload failed"
+success "Uploaded to TestPyPI!"
+
+echo ""
+success "🎉 Released v$NEW_VERSION to TestPyPI!"
+echo ""
+info "Test installation with:"
+echo "  pip install --index-url https://test.pypi.org/simple/ earlyexit==$NEW_VERSION"
+echo ""
+warning "NOTE: Version files were bumped but NOT committed."
+info "If tests pass, run: bin/publish (without bump argument)"
+info "Or reset with: git checkout pyproject.toml earlyexit/__init__.py"
+

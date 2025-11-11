@@ -1,0 +1,72 @@
+#!/bin/bash
+# Quick publish script for earlyexit
+# Usage: bin/publish [patch|minor|major]
+
+set -e
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+info() { echo -e "${BLUE}→${NC} $*"; }
+success() { echo -e "${GREEN}✓${NC} $*"; }
+error() { echo -e "${RED}✗${NC} $*" >&2; exit 1; }
+
+# Get to project root
+cd "$(dirname "$0")/.."
+
+# Check arguments
+BUMP_TYPE="${1:-patch}"
+
+if [[ ! "$BUMP_TYPE" =~ ^(major|minor|patch|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+    error "Invalid bump type: $BUMP_TYPE"
+    echo "Usage: bin/publish [patch|minor|major|X.Y.Z]"
+    exit 1
+fi
+
+# Get current version
+CURRENT_VERSION=$(python3 -c "import re; print(re.search(r'version = \"([\d.]+)\"', open('pyproject.toml').read()).group(1))")
+info "Current version: $CURRENT_VERSION"
+
+# Bump version
+info "Bumping version: $BUMP_TYPE"
+python3 bump_version.py "$BUMP_TYPE" || error "Version bump failed"
+
+# Get new version
+NEW_VERSION=$(python3 -c "import re; print(re.search(r'version = \"([\d.]+)\"', open('pyproject.toml').read()).group(1))")
+success "New version: $NEW_VERSION"
+
+# Commit and tag
+info "Committing version bump..."
+git add pyproject.toml earlyexit/__init__.py
+git commit -m "Bump version to $NEW_VERSION" || error "Commit failed"
+git tag "v$NEW_VERSION" || error "Tag failed"
+success "Committed and tagged v$NEW_VERSION"
+
+# Clean old builds
+info "Cleaning old builds..."
+rm -rf build/ dist/ *.egg-info
+
+# Build
+info "Building package..."
+python3 -m build || error "Build failed"
+success "Package built"
+
+# Upload to PyPI
+info "Uploading to PyPI..."
+python3 -m twine upload dist/* || error "Upload failed"
+success "Uploaded to PyPI!"
+
+# Push to git
+info "Pushing to git..."
+git push && git push --tags || error "Git push failed"
+success "Pushed to git remote"
+
+echo ""
+success "🎉 Released v$NEW_VERSION to PyPI!"
+echo ""
+info "Install with: pip install earlyexit==$NEW_VERSION"
+info "View at: https://pypi.org/project/earlyexit/$NEW_VERSION/"
+
