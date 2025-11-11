@@ -4,6 +4,48 @@ Quick utility scripts for development and release.
 
 ## Publishing Scripts
 
+### `bin/release_version.sh` - Complete Release Automation (Recommended)
+
+**The simplest way to release** - just provide the version number!
+
+```bash
+# Full release to PyPI
+./bin/release_version.sh 0.0.3
+
+# Test with TestPyPI first
+./bin/release_version.sh 0.0.3 --test
+
+# Quick release without prompts
+./bin/release_version.sh 0.0.3 -y
+
+# Only tag and build (no upload)
+./bin/release_version.sh 0.0.3 --skip-upload
+```
+
+**What it does:**
+1. ✅ Updates version in `pyproject.toml` and `earlyexit/__init__.py`
+2. ✅ Runs tests (can skip with `--skip-tests`)
+3. ✅ Commits the version change
+4. ✅ Creates git tag `vX.Y.Z`
+5. ✅ Pushes to GitHub (can skip with `--skip-push`)
+6. ✅ Builds package (wheel + source)
+7. ✅ Uploads to PyPI (or TestPyPI with `--test`)
+
+**All options:**
+```bash
+./bin/release_version.sh VERSION [OPTIONS]
+
+Options:
+  --test          Upload to TestPyPI instead of PyPI
+  --skip-tests    Skip running tests
+  --skip-push     Skip pushing to GitHub
+  --skip-upload   Only tag and build (no upload)
+  -y, --yes       Auto-yes to all prompts
+  -h, --help      Show help
+```
+
+---
+
 ### `bin/publish` - Release to PyPI
 
 Bump version, commit, tag, build, and upload to PyPI in one command.
@@ -115,11 +157,12 @@ pip install build twine
 
 ## Script Reference
 
-| Script | Purpose | Commits? | Pushes? |
-|--------|---------|----------|---------|
-| `publish` | Release to PyPI | ✅ Yes | ✅ Yes |
-| `publish-test` | Test on TestPyPI | ❌ No | ❌ No |
-| `quick-patch` | Fast patch release | ✅ Yes | ✅ Yes |
+| Script | Purpose | Commits? | Pushes? | Notes |
+|--------|---------|----------|---------|-------|
+| `release_version.sh` | Complete release (recommended) | ✅ Yes | ✅ Yes | Specify exact version |
+| `publish` | Release with version bump type | ✅ Yes | ✅ Yes | Uses bump_version.py |
+| `publish-test` | Test on TestPyPI | ❌ No | ❌ No | For testing only |
+| `quick-patch` | Fast patch release | ✅ Yes | ✅ Yes | No arguments needed |
 
 ## Troubleshooting
 
