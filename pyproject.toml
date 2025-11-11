@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "earlyexit"
-version = "0.0.2"
+version = "0.0.3"
 description = "Early exit pattern matching for command output with fast error detection"
 authors = [
     {name = "Robert Lee", email = "robert.lee@databricks.com"}
