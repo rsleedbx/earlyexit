@@ -833,8 +833,29 @@ All data stored **locally** in `~/.earlyexit/telemetry.db` by default:
 - ✅ No cloud upload (unless you opt-in)
 - ✅ Automatic PII scrubbing (passwords, tokens, paths)
 - ✅ Configurable retention (default 90 days)
-- ✅ Easy to disable: `--no-telemetry`
+- ✅ Easy to disable: `--no-telemetry` flag or `EARLYEXIT_NO_TELEMETRY=1` env var
 - ✅ **Negligible performance impact**: <1ms overhead (tested)
+
+**Disable telemetry completely:**
+```bash
+# Per-command
+$ earlyexit --no-telemetry 'ERROR' -- ./script.sh
+
+# Globally via environment variable
+$ export EARLYEXIT_NO_TELEMETRY=1    # Add to ~/.bashrc or ~/.zshrc
+$ earlyexit 'ERROR' -- ./script.sh   # No database created or accessed
+
+# In CI/CD (Dockerfile, GitHub Actions, etc.)
+ENV EARLYEXIT_NO_TELEMETRY=1         # Docker
+env:
+  EARLYEXIT_NO_TELEMETRY: 1          # GitHub Actions
+```
+
+When disabled:
+- ✅ No SQLite database created
+- ✅ Existing database not accessed or modified
+- ✅ All core features (pattern matching, timeouts, delay-exit) work normally
+- ❌ ML features (`suggest`, `--auto-tune`) unavailable
 
 **For ephemeral systems** (CI/CD, containers):
 - ✅ Optional HTTP backend for remote storage

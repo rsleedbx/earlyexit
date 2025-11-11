@@ -303,6 +303,9 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                         prefix += f"{YELLOW}[{stream_name}]{RESET} "
                     print(f"{prefix}{line_stripped}", flush=True)
     
+    except TimeoutError:
+        # Re-raise timeout errors so they can be handled by main()
+        raise
     except Exception as e:
         if not args.quiet:
             print(f"❌ Error processing {stream_name}: {e}", file=sys.stderr, flush=True)
@@ -779,6 +782,11 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     except FileNotFoundError:
         print(f"❌ Command not found: {args.command[0]}", file=sys.stderr)
         return 3
+    except TimeoutError:
+        # Timeout - show clean message without traceback
+        if not args.quiet:
+            print(f"⏱️  Timeout exceeded", file=sys.stderr)
+        return 2
     except Exception as e:
         print(f"❌ Error running command: {e}", file=sys.stderr)
         import traceback
@@ -855,8 +863,8 @@ Exit codes:
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
-    parser.add_argument('pattern', 
-                       help='Regular expression pattern to match')
+    parser.add_argument('pattern', nargs='?', default=None,
+                       help='Regular expression pattern to match (optional if -t/--idle-timeout/--first-output-timeout provided)')
     parser.add_argument('command', nargs='*',
                        help='Command to run (if not reading from stdin)')
     parser.add_argument('-t', '--timeout', type=float, metavar='SECONDS',
@@ -902,22 +910,156 @@ Exit codes:
     parser.add_argument('--color', choices=['always', 'auto', 'never'], default='auto',
                        help='Colorize matched text (default: auto)')
     parser.add_argument('--no-telemetry', action='store_true',
-                       help='Disable telemetry collection (stored locally in ~/.earlyexit/)')
+                       help='Disable telemetry collection (also: EARLYEXIT_NO_TELEMETRY=1). No SQLite database created when disabled.')
     parser.add_argument('--source-file', metavar='FILE',
                        help='Source file being processed (for telemetry, auto-detected if possible)')
     parser.add_argument('--auto-tune', action='store_true',
                        help='Automatically select optimal parameters based on telemetry (experimental)')
     parser.add_argument('--version', action='version', version='%(prog)s 0.0.1')
     
-    args = parser.parse_args()
+    # Pre-process sys.argv to handle optional pattern when timeout is provided
+    # If we have timeout options and '--' separator but no pattern before it, insert 'NONE'
+    import sys as sys_module
+    argv = sys_module.argv[1:]  # Skip program name
+    
+    # Check if any timeout option is present
+    has_timeout_option = any(opt in argv for opt in ['-t', '--timeout', '--idle-timeout', '--first-output-timeout'])
+    
+    # Check if '--' is present and is the first positional argument (no pattern before it)
+    # Positional args come after all options
+    if has_timeout_option and '--' in argv:
+        # Find the position of '--'
+        separator_idx = argv.index('--')
+        
+        # Check if everything before '--' is an option (starts with '-') or option value
+        # We need to determine if there's a pattern before '--'
+        is_first_positional = True
+        skip_next = False
+        for i in range(separator_idx):
+            arg = argv[i]
+            if skip_next:
+                skip_next = False
+                continue
+            if arg.startswith('-'):
+                # It's an option
+                # Check if this option takes a value (not a flag)
+                if arg in ['-t', '--timeout', '--idle-timeout', '--first-output-timeout', 
+                          '-m', '--max-count', '--delay-exit', '--fd', '--source-file'] or \
+                   (arg.startswith('-') and '=' in arg):
+                    # This option takes a value
+                    if '=' not in arg:
+                        skip_next = True  # Next arg is the value
+                continue
+            else:
+                # Non-option argument before '--' - this is the pattern
+                is_first_positional = False
+                break
+        
+        if is_first_positional:
+            # No pattern before '--', insert 'NONE'
+            argv.insert(separator_idx, 'NONE')
+    
+    args = parser.parse_args(argv)
+    
+    # Validate arguments
+    # Handle missing pattern - default to timeout-only mode if timeout options provided
+    no_pattern_mode = False
+    original_pattern = args.pattern
+    
+    if args.pattern is None:
+        # Pattern not provided - check if timeout options are present
+        has_timeout = args.timeout or args.idle_timeout or args.first_output_timeout
+        
+        if has_timeout:
+            # Timeout provided, pattern optional - use timeout-only mode
+            no_pattern_mode = True
+            args.pattern = '(?!.*)'  # Negative lookahead that always fails
+            original_pattern = 'NONE'
+            if not args.quiet:
+                # Show which timeout is active
+                timeout_info = []
+                if args.timeout:
+                    timeout_info.append(f"overall: {args.timeout}s")
+                if args.idle_timeout:
+                    timeout_info.append(f"idle: {args.idle_timeout}s")
+                if args.first_output_timeout:
+                    timeout_info.append(f"first-output: {args.first_output_timeout}s")
+                print(f"ℹ️  Timeout-only mode (no pattern specified) - {', '.join(timeout_info)}", file=sys.stderr)
+        else:
+            # No pattern and no timeout - this is an error
+            print("❌ Error: PATTERN is required", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Provide either:", file=sys.stderr)
+            print("  1. A pattern: earlyexit 'ERROR' -- command", file=sys.stderr)
+            print("  2. A timeout: earlyexit -t 30 -- command", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Run 'earlyexit --help' for more information.", file=sys.stderr)
+            return 2
+    
+    # Handle special "no pattern" keywords
+    if args.pattern in ['-', 'NONE', 'NOPATTERN']:
+        # User explicitly wants timeout/monitoring only, no pattern matching
+        no_pattern_mode = True
+        # Use a pattern that will never match anything
+        args.pattern = '(?!.*)'  # Negative lookahead that always fails
+        if not args.quiet:
+            # Show which timeout is active
+            timeout_info = []
+            if args.timeout:
+                timeout_info.append(f"overall: {args.timeout}s")
+            if args.idle_timeout:
+                timeout_info.append(f"idle: {args.idle_timeout}s")
+            if args.first_output_timeout:
+                timeout_info.append(f"first-output: {args.first_output_timeout}s")
+            if timeout_info:
+                print(f"ℹ️  Timeout-only mode (no pattern matching) - {', '.join(timeout_info)}", file=sys.stderr)
+            else:
+                print("ℹ️  Timeout-only mode (no pattern matching)", file=sys.stderr)
+    
+    # Check if pattern looks like it might be the separator (user forgot pattern)
+    if args.pattern == '--':
+        print("❌ Error: Missing PATTERN argument", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Usage: earlyexit PATTERN [options] -- COMMAND [args...]", file=sys.stderr)
+        print("       earlyexit [options] -- COMMAND [args...]  (with -t/--idle-timeout)", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Examples:", file=sys.stderr)
+        print("  earlyexit 'ERROR' -- ./my-script.sh", file=sys.stderr)
+        print("  earlyexit -t 30 -- ./long-script.sh  (timeout-only, no pattern)", file=sys.stderr)
+        print("  cat file.log | earlyexit 'CRITICAL'", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Run 'earlyexit --help' for more information.", file=sys.stderr)
+        return 2
+    
+    # Check if pattern looks like a command name (common mistake: forgetting the pattern)
+    # e.g., "earlyexit echo ..." or "earlyexit -- echo ..." instead of "earlyexit 'ERROR' -- echo ..."
+    common_commands = ['echo', 'cat', 'grep', 'ls', 'python', 'python3', 'node', 'bash', 'sh', 
+                       'npm', 'yarn', 'make', 'cmake', 'cargo', 'go', 'java', 'perl', 'ruby']
+    
+    if args.pattern in common_commands and len(args.command) > 0:
+        # Pattern is a command name AND there are command arguments
+        # This strongly suggests they forgot the pattern
+        print(f"❌ Error: Missing PATTERN argument", file=sys.stderr)
+        print("", file=sys.stderr)
+        print(f"It looks like you're trying to run: {args.pattern} {' '.join(args.command)}", file=sys.stderr)
+        print("But you forgot to specify what pattern to search for!", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Correct usage:", file=sys.stderr)
+        print(f"  earlyexit 'ERROR' -- {args.pattern} {' '.join(args.command)}", file=sys.stderr)
+        print(f"  earlyexit -t 30 -- {args.pattern} {' '.join(args.command)}  (timeout-only)", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("Run 'earlyexit --help' for more information.", file=sys.stderr)
+        return 2
     
     # Initialize telemetry (opt-out, enabled by default)
-    telemetry_enabled = TELEMETRY_AVAILABLE and not args.no_telemetry
+    # Can be disabled via --no-telemetry flag or EARLYEXIT_NO_TELEMETRY env var
+    env_no_telemetry = os.environ.get('EARLYEXIT_NO_TELEMETRY', '').lower() in ('1', 'true', 'yes')
+    telemetry_enabled = TELEMETRY_AVAILABLE and not args.no_telemetry and not env_no_telemetry
     telemetry_collector = None
     telemetry_start_time = time.time()
     telemetry_data = {
         'command': ' '.join(args.command) if args.command else '<pipe mode>',
-        'pattern': args.pattern,
+        'pattern': original_pattern if no_pattern_mode else args.pattern,
         'pattern_type': 'perl_regex' if args.perl_regexp else 'python_re',
         'case_insensitive': args.ignore_case,
         'invert_match': args.invert_match,
@@ -1111,6 +1253,37 @@ Exit codes:
                                             "stdin", None, None, match_timestamp,
                                             telemetry_collector, execution_id, telemetry_start_time, source_file_container)
             
+            # Handle delay-exit in pipe mode if match was found
+            if match_count[0] > 0 and args.delay_exit and args.delay_exit > 0 and match_timestamp[0] > 0:
+                elapsed = time.time() - match_timestamp[0]
+                remaining = args.delay_exit - elapsed
+                
+                if remaining > 0:
+                    if not args.quiet:
+                        print(f"\n⏳ Waiting {remaining:.1f}s for error context...", file=sys.stderr)
+                    
+                    # Continue reading for the delay period
+                    import select
+                    end_time = time.time() + remaining
+                    
+                    while time.time() < end_time:
+                        # Check if there's input available (non-blocking)
+                        if select.select([sys.stdin], [], [], 0.1)[0]:
+                            try:
+                                line = sys.stdin.readline()
+                                if not line:
+                                    break  # EOF
+                                if not args.quiet:
+                                    if use_color:
+                                        print(line, end='')
+                                    else:
+                                        print(line, end='')
+                            except:
+                                break
+                        else:
+                            # No input available, just wait
+                            pass
+            
             # Cancel timeout on completion
             if args.timeout:
                 signal.alarm(0)
@@ -1123,8 +1296,30 @@ Exit codes:
     except TimeoutError:
         if not args.quiet:
             print(f"\n⏱️  Timeout exceeded ({args.timeout}s)", file=sys.stderr)
+            # Check if stdin is a pipe (not a TTY) - if so, upstream process may still be running
+            try:
+                is_pipe = not sys.stdin.isatty()
+            except:
+                is_pipe = True  # Assume it's a pipe if we can't check
+            
+            if is_pipe:
+                # We're in a pipeline - the upstream process might still be running
+                # This is expected behavior - the shell waits for the entire pipeline to complete
+                print("💡 Tip: If prompt doesn't return, press Ctrl+D (EOF) or Ctrl+C", file=sys.stderr)
+            sys.stderr.flush()
         record_telemetry(2, 'timeout')
-        return 2
+        # Close stdin to unblock any pending reads and force exit
+        try:
+            sys.stdin.close()
+        except:
+            pass
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        except:
+            pass
+        # Force exit to ensure we don't hang
+        os._exit(2)
     
     except KeyboardInterrupt:
         if not args.quiet:

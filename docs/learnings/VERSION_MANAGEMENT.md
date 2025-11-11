@@ -8,13 +8,13 @@ Automated version bumping and PyPI upload for earlyexit.
 
 ```bash
 # Bump patch version and release to PyPI
-./release.sh --bump patch
+bin/release.sh --bump patch
 
 # Bump minor version and release
-./release.sh --bump minor
+bin/release.sh --bump minor
 
 # Bump major version and release
-./release.sh --bump major
+bin/release.sh --bump major
 ```
 
 ### Option 2: Manual Version Bump
@@ -32,7 +32,7 @@ git tag vX.Y.Z
 git push && git push --tags
 
 # 4. Release
-./release.sh
+bin/release.sh
 ```
 
 ## Version Bumping
@@ -88,19 +88,19 @@ The `release.sh` script automates the entire release workflow.
 
 ```bash
 # Release current version
-./release.sh
+bin/release.sh
 
 # Bump and release in one command
-./release.sh --bump patch
+bin/release.sh --bump patch
 
 # Set version and release
-./release.sh --version 1.0.0
+bin/release.sh --version 1.0.0
 
 # Release to TestPyPI (for testing)
-./release.sh --test
+bin/release.sh --test
 
 # Skip interactive prompts
-./release.sh --bump patch -y
+bin/release.sh --bump patch -y
 ```
 
 ### Options
@@ -132,7 +132,7 @@ The `release.sh` script automates the entire release workflow.
 
 ```bash
 # One command does it all
-./release.sh --bump patch -y
+bin/release.sh --bump patch -y
 
 # What happens:
 # 1. 0.0.1 → 0.0.2
@@ -146,7 +146,7 @@ The `release.sh` script automates the entire release workflow.
 ### Workflow 2: Minor Release (New Features)
 
 ```bash
-./release.sh --bump minor
+bin/release.sh --bump minor
 
 # Interactive prompts:
 # - Commit version bump? (y/n)
@@ -170,7 +170,7 @@ git commit -m "Bump version to 1.0.0 - Breaking changes: ..."
 git tag v1.0.0
 
 # Release
-./release.sh -y
+bin/release.sh -y
 
 # Push
 git push && git push --tags
@@ -180,13 +180,13 @@ git push && git push --tags
 
 ```bash
 # Test on TestPyPI first
-./release.sh --bump patch --test
+bin/release.sh --bump patch --test
 
 # Verify installation
 pip install --index-url https://test.pypi.org/simple/ earlyexit
 
 # If good, release to real PyPI
-./release.sh
+bin/release.sh
 ```
 
 ### Workflow 5: Manual Control
@@ -210,7 +210,7 @@ git commit -m "Release 0.0.2
 git tag v0.0.2
 
 # 5. Build and upload
-./release.sh --skip-tests -y
+bin/release.sh --skip-tests -y
 
 # 6. Push
 git push && git push --tags
@@ -308,7 +308,7 @@ jobs:
 ```bash
 # Bump to next version
 python3 bump_version.py patch
-./release.sh -y
+bin/release.sh -y
 ```
 
 ### "Failed to update version in file"
@@ -371,13 +371,13 @@ earlyexit --help
 
 ```bash
 # Upload to test instance
-./release.sh --bump patch --test
+bin/release.sh --bump patch --test
 
 # Verify
 pip install --index-url https://test.pypi.org/simple/ earlyexit
 
 # Then release to real PyPI
-./release.sh
+bin/release.sh
 ```
 
 ### 3. Semantic Versioning
@@ -407,27 +407,27 @@ git push --tags
 Commit all changes before releasing:
 ```bash
 git status  # Should be clean
-./release.sh --bump patch
+bin/release.sh --bump patch
 ```
 
 ## Quick Reference
 
 ```bash
 # Most common: Patch release
-./release.sh --bump patch -y
+bin/release.sh --bump patch -y
 
 # Test first
-./release.sh --bump patch --test -y
+bin/release.sh --bump patch --test -y
 
 # Manual version
 python3 bump_version.py patch
 git add -A && git commit -m "Bump version"
 git tag v$(python3 -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
-./release.sh -y
+bin/release.sh -y
 git push && git push --tags
 
 # Emergency fix (skip tests)
-./release.sh --bump patch --skip-tests -y
+bin/release.sh --bump patch --skip-tests -y
 ```
 
 ## Version Management Tools
@@ -444,7 +444,7 @@ git push && git push --tags
 
 If you encounter issues:
 1. Check this guide
-2. Run `./release.sh --help`
+2. Run `bin/release.sh --help`
 3. Run `python3 bump_version.py --help`
 4. Check PyPI documentation: https://packaging.python.org/
 

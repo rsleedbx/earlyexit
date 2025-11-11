@@ -23,7 +23,7 @@ warning() { echo -e "${YELLOW}⚠${NC} $*"; }
 error() { echo -e "${RED}✗${NC} $*" >&2; }
 
 # Check if we're in the right directory
-if [ ! -f "pyproject.toml" ] || [ ! -f "bump_version.py" ]; then
+if [ ! -f "pyproject.toml" ] || [ ! -f "bin/bump_version.py" ]; then
     error "Must run from earlyexit project root"
     exit 1
 fi
@@ -104,7 +104,7 @@ done
 # Bump version if requested
 if [ -n "$BUMP_TYPE" ]; then
     info "Bumping version: $BUMP_TYPE"
-    python3 bump_version.py "$BUMP_TYPE" || exit 1
+    python3 bin/bump_version.py "$BUMP_TYPE" || exit 1
     
     # Get new version
     NEW_VERSION=$(python3 -c "import re; print(re.search(r'version = \"([\d.]+)\"', open('pyproject.toml').read()).group(1))")

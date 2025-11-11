@@ -34,7 +34,7 @@ info "Current version: $CURRENT_VERSION"
 
 # Bump version
 info "Bumping version: $BUMP_TYPE"
-python3 bump_version.py "$BUMP_TYPE" || error "Version bump failed"
+python3 bin/bump_version.py "$BUMP_TYPE" || error "Version bump failed"
 
 # Get new version
 NEW_VERSION=$(python3 -c "import re; print(re.search(r'version = \"([\d.]+)\"', open('pyproject.toml').read()).group(1))")

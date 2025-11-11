@@ -147,7 +147,7 @@ Examples:
         print("   2. Commit: git add -A && git commit -m 'Bump version to {}'".format(new_version))
         print("   3. Tag: git tag v{}".format(new_version))
         print("   4. Push: git push && git push --tags")
-        print("   5. Build & upload: ./release.sh")
+        print("   5. Build & upload: bin/release.sh")
         
         return 0
         
