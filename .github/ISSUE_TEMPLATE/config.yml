@@ -1,0 +1,9 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Community Data Sharing (Discussions)
+    url: https://github.com/rsleedbx/earlyexit/discussions/categories/data-sharing
+    about: Share and discuss your earlyexit results with the community
+  - name: General Questions
+    url: https://github.com/rsleedbx/earlyexit/discussions/categories/q-a
+    about: Ask questions about using earlyexit
+

@@ -144,6 +144,77 @@ class TelemetryCollector:
             )
         """)
         
+        # Create user_sessions table for interactive learning
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                session_id TEXT PRIMARY KEY,
+                execution_id TEXT,
+                timestamp REAL,
+                
+                -- Session Context
+                command TEXT,
+                duration REAL,
+                idle_time REAL,
+                stop_reason TEXT,  -- 'error', 'timeout', 'hang'
+                
+                -- Output Metrics
+                stdout_lines INTEGER,
+                stderr_lines INTEGER,
+                total_lines INTEGER,
+                
+                -- User Selections
+                selected_pattern TEXT,
+                pattern_confidence REAL,
+                pattern_stream TEXT,  -- 'stdout', 'stderr', 'both', 'custom'
+                
+                -- Suggested Timeouts
+                suggested_overall_timeout REAL,
+                suggested_idle_timeout REAL,
+                suggested_delay_exit REAL,
+                
+                -- Metadata
+                project_type TEXT,
+                working_directory TEXT,
+                
+                FOREIGN KEY (execution_id) REFERENCES executions (execution_id) ON DELETE CASCADE
+            )
+        """)
+        
+        # Create learned_settings table for smart suggestions
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS learned_settings (
+                setting_id TEXT PRIMARY KEY,
+                command_hash TEXT,
+                project_type TEXT,
+                
+                -- ML Features (JSON format)
+                features_json TEXT,  -- Serialized features dict
+                
+                -- Learned Parameters
+                learned_pattern TEXT,
+                pattern_confidence REAL,
+                learned_timeout REAL,
+                learned_idle_timeout REAL,
+                learned_delay_exit REAL,
+                
+                -- Validation Metrics (for recommendation)
+                true_positives INTEGER DEFAULT 0,
+                true_negatives INTEGER DEFAULT 0,
+                false_positives INTEGER DEFAULT 0,
+                false_negatives INTEGER DEFAULT 0,
+                user_confirmed_good INTEGER DEFAULT 0,
+                user_rejected INTEGER DEFAULT 0,
+                
+                -- Usage Statistics
+                times_used INTEGER DEFAULT 0,
+                last_used_timestamp REAL,
+                created_timestamp REAL,
+                
+                -- Metadata
+                is_active INTEGER DEFAULT 1  -- Can be disabled by user
+            )
+        """)
+        
         # Create indexes
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_command_hash 
@@ -153,6 +224,16 @@ class TelemetryCollector:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_timestamp 
             ON executions(timestamp)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_learned_command_hash
+            ON learned_settings(command_hash)
+        """)
+        
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_learned_project_type
+            ON learned_settings(project_type)
         """)
         
         conn.commit()
@@ -400,6 +481,257 @@ class TelemetryCollector:
                 # Silently fail - don't disrupt execution
                 pass
     
+    def record_user_session(self, session_data: Dict[str, Any]):
+        """
+        Record an interactive learning session
+        
+        Args:
+            session_data: Dict with session details from interactive prompts
+        """
+        if not self.enabled:
+            return
+        
+        with self._get_connection() as conn:
+            if not conn:
+                return
+            
+            try:
+                session_id = f"session_{int(time.time() * 1000)}_{os.getpid()}"
+                
+                # Extract timeout suggestions
+                timeout_suggestions = session_data.get('timeout_suggestions', {})
+                
+                self._execute_with_retry(conn, """
+                    INSERT INTO user_sessions (
+                        session_id, execution_id, timestamp,
+                        command, duration, idle_time, stop_reason,
+                        stdout_lines, stderr_lines, total_lines,
+                        selected_pattern, pattern_confidence, pattern_stream,
+                        suggested_overall_timeout, suggested_idle_timeout, suggested_delay_exit,
+                        project_type, working_directory
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    session_id,
+                    session_data.get('execution_id'),
+                    session_data.get('timestamp', time.time()),
+                    session_data.get('command', ''),
+                    session_data.get('duration', 0.0),
+                    session_data.get('idle_time', 0.0),
+                    session_data.get('stop_reason', 'unknown'),
+                    session_data.get('line_counts', {}).get('stdout', 0),
+                    session_data.get('line_counts', {}).get('stderr', 0),
+                    session_data.get('line_counts', {}).get('total', 0),
+                    session_data.get('selected_pattern'),
+                    session_data.get('pattern_confidence', 0.0),
+                    session_data.get('pattern_stream'),
+                    timeout_suggestions.get('overall_timeout'),
+                    timeout_suggestions.get('idle_timeout'),
+                    timeout_suggestions.get('delay_exit'),
+                    session_data.get('project_type', 'unknown'),
+                    session_data.get('working_directory', '')
+                ))
+                
+            except Exception:
+                # Silently fail - don't disrupt execution
+                pass
+    
+    def save_learned_setting(self, setting_data: Dict[str, Any]) -> Optional[str]:
+        """
+        Save or update a learned setting
+        
+        Args:
+            setting_data: Dict with learned parameters and features
+        
+        Returns:
+            setting_id if successful, None otherwise
+        """
+        if not self.enabled:
+            return None
+        
+        with self._get_connection() as conn:
+            if not conn:
+                return None
+            
+            try:
+                import json
+                
+                setting_id = setting_data.get('setting_id') or \
+                             f"setting_{int(time.time() * 1000)}_{os.getpid()}"
+                
+                # Check if setting exists
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT setting_id FROM learned_settings WHERE command_hash = ? AND project_type = ?",
+                    (setting_data['command_hash'], setting_data['project_type'])
+                )
+                existing = cursor.fetchone()
+                
+                if existing:
+                    # Update existing setting
+                    self._execute_with_retry(conn, """
+                        UPDATE learned_settings SET
+                            features_json = ?,
+                            learned_pattern = ?,
+                            pattern_confidence = ?,
+                            learned_timeout = ?,
+                            learned_idle_timeout = ?,
+                            learned_delay_exit = ?,
+                            last_used_timestamp = ?
+                        WHERE command_hash = ? AND project_type = ?
+                    """, (
+                        json.dumps(setting_data.get('features', {})),
+                        setting_data.get('learned_pattern'),
+                        setting_data.get('pattern_confidence', 0.0),
+                        setting_data.get('learned_timeout'),
+                        setting_data.get('learned_idle_timeout'),
+                        setting_data.get('learned_delay_exit'),
+                        time.time(),
+                        setting_data['command_hash'],
+                        setting_data['project_type']
+                    ))
+                    return existing[0]
+                else:
+                    # Insert new setting
+                    self._execute_with_retry(conn, """
+                        INSERT INTO learned_settings (
+                            setting_id, command_hash, project_type,
+                            features_json,
+                            learned_pattern, pattern_confidence,
+                            learned_timeout, learned_idle_timeout, learned_delay_exit,
+                            created_timestamp, last_used_timestamp,
+                            is_active
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        setting_id,
+                        setting_data['command_hash'],
+                        setting_data['project_type'],
+                        json.dumps(setting_data.get('features', {})),
+                        setting_data.get('learned_pattern'),
+                        setting_data.get('pattern_confidence', 0.0),
+                        setting_data.get('learned_timeout'),
+                        setting_data.get('learned_idle_timeout'),
+                        setting_data.get('learned_delay_exit'),
+                        time.time(),
+                        time.time(),
+                        1
+                    ))
+                    return setting_id
+                    
+            except Exception:
+                # Silently fail
+                return None
+    
+    def get_learned_setting(self, command_hash: str, project_type: str) -> Optional[Dict[str, Any]]:
+        """
+        Get learned setting for a command
+        
+        Args:
+            command_hash: Hash of the command
+            project_type: Type of project
+        
+        Returns:
+            Dict with learned setting data, or None
+        """
+        if not self.enabled:
+            return None
+        
+        with self._get_connection() as conn:
+            if not conn:
+                return None
+            
+            try:
+                import json
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT 
+                        setting_id, command_hash, project_type,
+                        features_json,
+                        learned_pattern, pattern_confidence,
+                        learned_timeout, learned_idle_timeout, learned_delay_exit,
+                        true_positives, true_negatives, false_positives, false_negatives,
+                        user_confirmed_good, user_rejected,
+                        times_used, last_used_timestamp, created_timestamp,
+                        is_active
+                    FROM learned_settings
+                    WHERE command_hash = ? AND project_type = ? AND is_active = 1
+                    ORDER BY last_used_timestamp DESC
+                    LIMIT 1
+                """, (command_hash, project_type))
+                
+                row = cursor.fetchone()
+                if not row:
+                    return None
+                
+                return {
+                    'setting_id': row[0],
+                    'command_hash': row[1],
+                    'project_type': row[2],
+                    'features': json.loads(row[3]) if row[3] else {},
+                    'learned_pattern': row[4],
+                    'pattern_confidence': row[5],
+                    'learned_timeout': row[6],
+                    'learned_idle_timeout': row[7],
+                    'learned_delay_exit': row[8],
+                    'validation': {
+                        'true_positives': row[9],
+                        'true_negatives': row[10],
+                        'false_positives': row[11],
+                        'false_negatives': row[12],
+                        'user_confirmed_good': row[13],
+                        'user_rejected': row[14]
+                    },
+                    'times_used': row[15],
+                    'last_used_timestamp': row[16],
+                    'created_timestamp': row[17],
+                    'is_active': row[18]
+                }
+                
+            except Exception:
+                return None
+    
+    def update_learned_setting_validation(self, setting_id: str, 
+                                          outcome: str, user_feedback: Optional[str] = None):
+        """
+        Update validation metrics for a learned setting
+        
+        Args:
+            setting_id: ID of the setting
+            outcome: 'true_positive', 'true_negative', 'false_positive', 'false_negative'
+            user_feedback: 'confirmed_good' or 'rejected'
+        """
+        if not self.enabled or not setting_id:
+            return
+        
+        with self._get_connection() as conn:
+            if not conn:
+                return
+            
+            try:
+                # Update outcome
+                if outcome in ['true_positive', 'true_negative', 'false_positive', 'false_negative']:
+                    field = outcome + 's'
+                    self._execute_with_retry(conn, f"""
+                        UPDATE learned_settings 
+                        SET {field} = {field} + 1,
+                            times_used = times_used + 1,
+                            last_used_timestamp = ?
+                        WHERE setting_id = ?
+                    """, (time.time(), setting_id))
+                
+                # Update user feedback
+                if user_feedback in ['confirmed_good', 'rejected']:
+                    field = 'user_' + user_feedback
+                    self._execute_with_retry(conn, f"""
+                        UPDATE learned_settings 
+                        SET {field} = {field} + 1
+                        WHERE setting_id = ?
+                    """, (setting_id,))
+                    
+            except Exception:
+                # Silently fail
+                pass
+    
     def get_stats(self) -> Dict[str, Any]:
         """Get basic statistics"""
         if not self.enabled:
@@ -427,10 +759,15 @@ class TelemetryCollector:
             cursor.execute("SELECT AVG(total_runtime) FROM executions WHERE total_runtime IS NOT NULL")
             avg_runtime = cursor.fetchone()[0]
             
+            # Learned settings count
+            cursor.execute("SELECT COUNT(*) FROM learned_settings WHERE is_active = 1")
+            learned_count = cursor.fetchone()[0]
+            
             return {
                 "total_executions": total,
                 "by_project_type": by_project,
-                "avg_runtime_seconds": avg_runtime
+                "avg_runtime_seconds": avg_runtime,
+                "learned_settings": learned_count
             }
     
     def close(self):

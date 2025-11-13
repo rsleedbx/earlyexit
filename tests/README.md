@@ -14,6 +14,14 @@ This directory contains test scripts for the `earlyexit` project.
   - Tests single, concurrent, and timeout scenarios
   - Run with: `python3 test_subprocess_telemetry.py`
 
+- **`test_delay_exit_features.py`** - Comprehensive tests for delay-exit and delay-exit-after-lines
+  - Tests both stdout/stderr monitoring (default behavior)
+  - Tests stdout-only and stderr-only monitoring
+  - Verifies delay-exit time limit
+  - Verifies delay-exit-after-lines limit (whichever comes first)
+  - Tests pipe mode (stdin)
+  - Run with: `python3 test_delay_exit_features.py`
+
 ### Shell Scripts
 
 #### Feature Tests
@@ -73,12 +81,13 @@ done
 
 ### Advanced Features
 - ✅ File descriptor monitoring
-- ✅ Multiple stream monitoring
+- ✅ Multiple stream monitoring (both stdout/stderr by default)
 - ✅ Per-FD pattern matching
 - ✅ Overall timeout
 - ✅ Idle timeout
 - ✅ First output timeout
-- ✅ Delay-exit feature
+- ✅ Delay-exit feature (time-based)
+- ✅ Delay-exit-after-lines feature (line count-based, whichever comes first)
 
 ### Telemetry & ML
 - ✅ Telemetry capture

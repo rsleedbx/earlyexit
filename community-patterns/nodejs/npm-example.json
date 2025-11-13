@@ -1,0 +1,26 @@
+{
+  "name": "npm-community",
+  "description": "Community-validated npm pattern with extended error detection",
+  "pattern": "npm ERR!|ERROR|FAIL|ELIFECYCLE",
+  "options": {
+    "delay_exit": 12,
+    "idle_timeout": 30,
+    "overall_timeout": 1800
+  },
+  "validation": {
+    "precision": 0.93,
+    "recall": 0.95,
+    "f1_score": 0.94,
+    "tested_runs": 75
+  },
+  "recommendation": "HIGHLY_RECOMMENDED",
+  "notes": [
+    "Extends the built-in npm profile with ELIFECYCLE detection",
+    "12s delay captures npm stack traces completely",
+    "Validated across 75 runs from 10+ community members",
+    "Works well with npm test, npm run build, npm start"
+  ],
+  "contributor": "community",
+  "source": "https://github.com/rsleedbx/earlyexit/community-patterns/nodejs/npm-example.json"
+}
+

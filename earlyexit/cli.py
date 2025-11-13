@@ -139,9 +139,11 @@ def compile_pattern(pattern: str, flags: int = 0, perl_style: bool = False) -> P
 def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_offset: int, 
                    match_count: list, use_color: bool, stream_name: str = "",
                    last_output_time: Optional[list] = None, first_output_seen: Optional[list] = None,
+                   first_stream_time: Optional[list] = None,
                    match_timestamp: Optional[list] = None, telemetry_collector=None, 
                    execution_id: Optional[str] = None, start_time: Optional[float] = None,
-                   source_file_container: Optional[list] = None):
+                   source_file_container: Optional[list] = None, post_match_lines: Optional[list] = None,
+                   log_file=None):
     """
     Process a stream (stdout or stderr) line by line
     
@@ -155,11 +157,13 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
         stream_name: Name of stream for debugging ("stdout" or "stderr")
         last_output_time: List with timestamp of last output (mutable)
         first_output_seen: List with boolean if first output seen (mutable)
+        first_stream_time: List with timestamp when first output seen on THIS stream (mutable)
         match_timestamp: List with timestamp of first match (mutable)
         telemetry_collector: Telemetry collector instance for recording match events
         execution_id: Execution ID for telemetry
         start_time: Start time of execution for timestamp offsets
         source_file_container: List containing source file (mutable, for dynamic detection)
+        post_match_lines: List with count of lines captured after match (mutable)
         
     Returns:
         Number of lines processed
@@ -172,10 +176,19 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                     line = line.decode('utf-8', errors='replace')
                 
                 # Update output tracking
+                current_time = time.time()
                 if last_output_time is not None:
-                    last_output_time[0] = time.time()
+                    last_output_time[0] = current_time
                 if first_output_seen is not None and not first_output_seen[0]:
                     first_output_seen[0] = True
+                # Track first output time for this specific stream
+                if first_stream_time is not None and first_stream_time[0] == 0.0:
+                    first_stream_time[0] = current_time
+                
+                # Write to log file if enabled
+                if log_file:
+                    log_file.write(line)
+                    log_file.flush()
                 
                 if not args.quiet:
                     print(line.rstrip('\n'), flush=True)
@@ -210,10 +223,14 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                 line = line.decode('utf-8', errors='replace')
             
             # Update output tracking
+            current_time = time.time()
             if last_output_time is not None:
-                last_output_time[0] = time.time()
+                last_output_time[0] = current_time
             if first_output_seen is not None and not first_output_seen[0]:
                 first_output_seen[0] = True
+            # Track first output time for this specific stream
+            if first_stream_time is not None and first_stream_time[0] == 0.0:
+                first_stream_time[0] = current_time
             
             line_number += 1
             line_stripped = line.rstrip('\n')
@@ -261,6 +278,11 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                         # Silently fail - don't disrupt execution
                         pass
                 
+                # Write to log file if enabled (always write, even if quiet)
+                if log_file:
+                    log_file.write(line)
+                    log_file.flush()
+                
                 # Output the line if not quiet
                 if not args.quiet:
                     prefix = ""
@@ -287,14 +309,36 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                         # No delay, exit immediately
                         return line_number - line_number_offset
                     elif match_timestamp and match_timestamp[0] > 0:
-                        # Check if delay has expired
+                        # Check if delay has expired OR if we've captured enough lines
                         elapsed = time.time() - match_timestamp[0]
                         if elapsed >= args.delay_exit:
                             # Delay expired, stop reading
                             return line_number - line_number_offset
+                        if post_match_lines and post_match_lines[0] >= args.delay_exit_after_lines:
+                            # Captured enough lines, stop reading
+                            return line_number - line_number_offset
                     # Otherwise continue reading (still within delay period)
             else:
-                # Non-matching line - pass through if not quiet
+                # Non-matching line - write to log and pass through if not quiet
+                # Write to log file if enabled
+                if log_file:
+                    log_file.write(line)
+                    log_file.flush()
+                
+                # Increment post-match line counter if we've matched
+                if match_count[0] >= args.max_count and post_match_lines is not None:
+                    post_match_lines[0] += 1
+                    # Check if we've exceeded line limit
+                    if post_match_lines[0] >= args.delay_exit_after_lines:
+                        if not args.quiet:
+                            prefix = ""
+                            if args.line_number:
+                                prefix = f"{line_number}:"
+                            if stream_name and args.fd_prefix:
+                                prefix += f"{YELLOW}[{stream_name}]{RESET} "
+                            print(f"{prefix}{line_stripped}", flush=True)
+                        return line_number - line_number_offset
+                
                 if not args.quiet:
                     prefix = ""
                     if args.line_number:
@@ -331,7 +375,34 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     Returns:
         Exit code
     """
+    # Setup auto-logging
+    from earlyexit.auto_logging import setup_auto_logging
+    stdout_log_path, stderr_log_path = setup_auto_logging(args, args.command, is_command_mode=True)
+    
+    # Open log files if auto-logging is enabled
+    stdout_log_file = None
+    stderr_log_file = None
+    if stdout_log_path:
+        try:
+            # Open in append mode if requested (like tee -a)
+            file_mode = 'a' if getattr(args, 'append', False) else 'w'
+            stdout_log_file = open(stdout_log_path, file_mode)
+            stderr_log_file = open(stderr_log_path, file_mode)
+            
+            # Display "Logging to:" message unless quiet
+            if not args.quiet:
+                mode_msg = " (appending)" if file_mode == 'a' else ""
+                print(f"📝 Logging to{mode_msg}:")
+                print(f"   stdout: {stdout_log_path}")
+                print(f"   stderr: {stderr_log_path}")
+        except Exception as e:
+            if not args.quiet:
+                print(f"⚠️  Warning: Could not create log files: {e}", file=sys.stderr)
+            stdout_log_file = None
+            stderr_log_file = None
+    
     match_count = [0]  # Use list to make it mutable across threads
+    post_match_lines = [0]  # Track lines captured after match
     timed_out = [False]  # Track if we timed out
     timeout_reason = [""]  # Track why we timed out
     
@@ -339,6 +410,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     start_time = telemetry_start_time or time.time()
     last_output_time = [start_time]  # Shared across all streams
     first_output_seen = [False]
+    first_stdout_time = [0.0]  # Timestamp when first stdout line occurs
+    first_stderr_time = [0.0]  # Timestamp when first stderr line occurs
     match_timestamp = [0]  # Timestamp of first match (for delay-exit)
     
     # Source file container (mutable, can be updated from output)
@@ -450,8 +523,23 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             subprocess_kwargs['preexec_fn'] = setup_fds
             subprocess_kwargs['pass_fds'] = pass_fds
         
+        # Wrap command with stdbuf if unbuffered flags are set
+        command_to_run = args.command
+        unbuffer_stdout = getattr(args, 'unbuffered', False) or getattr(args, 'stdout_unbuffered', False)
+        unbuffer_stderr = getattr(args, 'unbuffered', False) or getattr(args, 'stderr_unbuffered', False)
+        
+        if unbuffer_stdout or unbuffer_stderr:
+            stdbuf_args = ['stdbuf']
+            if unbuffer_stdout:
+                stdbuf_args.append('-o0')
+            if unbuffer_stderr:
+                stdbuf_args.append('-e0')
+            command_to_run = stdbuf_args + args.command
+            if args.verbose:
+                print(f"[earlyexit] Wrapping command with: {' '.join(stdbuf_args)}", file=sys.stderr)
+        
         # Start the subprocess
-        process = subprocess.Popen(args.command, **subprocess_kwargs)
+        process = subprocess.Popen(command_to_run, **subprocess_kwargs)
         
         # Close write ends of pipes in parent process
         for fd_num, (read_fd, write_fd) in fd_pipes.items():
@@ -535,11 +623,17 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             # Multiple streams - use threads
             for stream, fd_num, label, pattern in streams_to_monitor:
                 def make_monitor(s, fn, lbl, pat):
+                    # Determine which log file to use based on fd_num
+                    log_f = stdout_log_file if fn == 1 else stderr_log_file if fn == 2 else None
+                    # Determine which first-time tracker to use
+                    first_time = first_stdout_time if fn == 1 else first_stderr_time if fn == 2 else None
                     def monitor():
                         try:
                             process_stream(s, pat, args, 0, match_count, use_color, lbl,
-                                         last_output_time, first_output_seen, match_timestamp,
-                                         telemetry_collector, execution_id, start_time, source_file_container)
+                                         last_output_time, first_output_seen, first_time,
+                                         match_timestamp,
+                                         telemetry_collector, execution_id, start_time, source_file_container,
+                                         post_match_lines, log_f)
                         except:
                             pass
                     return monitor
@@ -552,24 +646,34 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 threads.append(thread)
             
             # Also create threads to drain non-monitored streams
-            if args.match_stderr == 'stdout' and not args.quiet:
+            if args.match_stderr == 'stdout':
                 # Drain stderr
                 def drain_stderr():
                     try:
                         for line in process.stderr:
-                            print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
+                            # Write to stderr log if enabled
+                            if stderr_log_file:
+                                stderr_log_file.write(line.decode('utf-8', errors='replace'))
+                                stderr_log_file.flush()
+                            if not args.quiet:
+                                print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
                     except:
                         pass
                 t = threading.Thread(target=drain_stderr, daemon=True)
                 t.start()
                 threads.append(t)
             
-            elif args.match_stderr == 'stderr' and not args.quiet:
+            elif args.match_stderr == 'stderr':
                 # Drain stdout
                 def drain_stdout():
                     try:
                         for line in process.stdout:
-                            print(line.decode('utf-8', errors='replace'), end='', flush=True)
+                            # Write to stdout log if enabled
+                            if stdout_log_file:
+                                stdout_log_file.write(line.decode('utf-8', errors='replace'))
+                                stdout_log_file.flush()
+                            if not args.quiet:
+                                print(line.decode('utf-8', errors='replace'), end='', flush=True)
                     except:
                         pass
                 t = threading.Thread(target=drain_stdout, daemon=True)
@@ -579,11 +683,13 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             # Wait for threads to complete or match to be found
             while any(t.is_alive() for t in threads):
                 if match_count[0] >= args.max_count:
-                    # Check if delay-exit period has expired
+                    # Check if delay-exit period has expired OR if enough lines captured
                     should_exit = False
                     if args.delay_exit and args.delay_exit > 0 and match_timestamp[0] > 0:
                         elapsed = time.time() - match_timestamp[0]
                         if elapsed >= args.delay_exit:
+                            should_exit = True
+                        elif post_match_lines[0] >= args.delay_exit_after_lines:
                             should_exit = True
                     elif args.delay_exit == 0 or match_timestamp[0] == 0:
                         # No delay or no match timestamp recorded yet, exit immediately
@@ -613,12 +719,18 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
         elif streams_to_monitor:
             # Single stream - use thread to allow delay monitoring
             stream, fd_num, label, pattern = streams_to_monitor[0]
+            # Determine which log file to use based on fd_num
+            log_file_for_stream = stdout_log_file if fd_num == 1 else stderr_log_file if fd_num == 2 else None
+            # Determine which first-time tracker to use
+            first_time_for_stream = first_stdout_time if fd_num == 1 else first_stderr_time if fd_num == 2 else None
             
             def monitor_single():
                 try:
                     process_stream(stream, pattern, args, 0, match_count, use_color, label,
-                                 last_output_time, first_output_seen, match_timestamp,
-                                 telemetry_collector, execution_id, start_time, source_file_container)
+                                 last_output_time, first_output_seen, first_time_for_stream,
+                                 match_timestamp,
+                                 telemetry_collector, execution_id, start_time, source_file_container,
+                                 post_match_lines, log_file_for_stream)
                 except:
                     pass
             
@@ -628,11 +740,13 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             # Monitor for match and delay expiration
             while monitor_thread.is_alive():
                 if match_count[0] >= args.max_count:
-                    # Check if delay-exit period has expired
+                    # Check if delay-exit period has expired OR if enough lines captured
                     should_exit = False
                     if args.delay_exit and args.delay_exit > 0 and match_timestamp[0] > 0:
                         elapsed = time.time() - match_timestamp[0]
                         if elapsed >= args.delay_exit:
+                            should_exit = True
+                        elif post_match_lines[0] >= args.delay_exit_after_lines:
                             should_exit = True
                     elif args.delay_exit == 0 or match_timestamp[0] == 0:
                         # No delay or no match timestamp recorded yet, exit immediately
@@ -684,7 +798,9 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 try:
                     stdout_lines[0] = process_stream(
                         process.stdout, pattern, args, 0, match_count, use_color, "stdout",
-                        None, None, None, telemetry_collector, execution_id, start_time, source_file_container
+                        None, None, first_stdout_time,
+                        None, telemetry_collector, execution_id, start_time, source_file_container,
+                        post_match_lines, stdout_log_file
                     )
                 except:
                     pass
@@ -693,7 +809,9 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 try:
                     stderr_lines[0] = process_stream(
                         process.stderr, pattern, args, 0, match_count, use_color, "stderr",
-                        None, None, None, telemetry_collector, execution_id, start_time, source_file_container
+                        None, None, first_stderr_time,
+                        None, telemetry_collector, execution_id, start_time, source_file_container,
+                        post_match_lines, stderr_log_file
                     )
                 except:
                     pass
@@ -726,30 +844,42 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             # Only monitor stderr
             try:
                 process_stream(process.stderr, pattern, args, 0, match_count, use_color, "stderr",
-                             None, None, None, telemetry_collector, execution_id, start_time, source_file_container)
+                             None, None, first_stderr_time,
+                             None, telemetry_collector, execution_id, start_time, source_file_container,
+                             post_match_lines, stderr_log_file)
             except:
                 pass
             # Drain stdout
-            if not args.quiet:
-                try:
-                    for line in process.stdout:
+            try:
+                for line in process.stdout:
+                    # Write to stdout log if enabled
+                    if stdout_log_file:
+                        stdout_log_file.write(line.decode('utf-8', errors='replace'))
+                        stdout_log_file.flush()
+                    if not args.quiet:
                         print(line.decode('utf-8', errors='replace'), end='', flush=True)
-                except:
-                    pass
+            except:
+                pass
         else:
             # Only monitor stdout (default)
             try:
                 process_stream(process.stdout, pattern, args, 0, match_count, use_color, "stdout",
-                             None, None, None, telemetry_collector, execution_id, start_time, source_file_container)
+                             None, None, first_stdout_time,
+                             None, telemetry_collector, execution_id, start_time, source_file_container,
+                             post_match_lines, stdout_log_file)
             except:
                 pass
             # Drain stderr
-            if not args.quiet:
-                try:
-                    for line in process.stderr:
+            try:
+                for line in process.stderr:
+                    # Write to stderr log if enabled
+                    if stderr_log_file:
+                        stderr_log_file.write(line.decode('utf-8', errors='replace'))
+                        stderr_log_file.flush()
+                    if not args.quiet:
                         print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
-                except:
-                    pass
+            except:
+                pass
         
         # Cancel timeout if still running
         if timeout_timer:
@@ -793,6 +923,26 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
         traceback.print_exc()
         return 3
     finally:
+        # Clean up log files
+        if stdout_log_file:
+            try:
+                stdout_log_file.close()
+            except:
+                pass
+        if stderr_log_file:
+            try:
+                stderr_log_file.close()
+            except:
+                pass
+        
+        # Gzip log files if requested
+        if getattr(args, 'gzip', False) and stdout_log_path:
+            try:
+                from earlyexit.auto_logging import gzip_log_files
+                gzip_log_files(stdout_log_path, stderr_log_path, quiet=args.quiet)
+            except Exception:
+                pass  # Silently fail - don't disrupt execution
+        
         # Clean up any remaining open file descriptors
         for fd in pipes_to_close:
             try:
@@ -816,11 +966,14 @@ Examples:
   earlyexit -t 300 'FAILED' pytest -v
   earlyexit -t 600 'error' terraform apply -auto-approve
   
-  # Monitor stderr instead of stdout
-  earlyexit --stderr 'Error' ./build.sh
+  # Monitor both stdout and stderr (default)
+  earlyexit 'Error' -- ./app
   
-  # Monitor both stdout and stderr
-  earlyexit --both 'Error' ./app
+  # Monitor only stderr
+  earlyexit --stderr 'Error' -- ./build.sh
+  
+  # Monitor only stdout
+  earlyexit --stdout 'Error' -- ./build.sh
   
   # Monitor custom file descriptors (fd 3, 4, etc.)
   earlyexit --fd 3 'Error' ./app
@@ -863,40 +1016,28 @@ Exit codes:
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
+    # Positional arguments
     parser.add_argument('pattern', nargs='?', default=None,
                        help='Regular expression pattern to match (optional if -t/--idle-timeout/--first-output-timeout provided)')
     parser.add_argument('command', nargs='*',
                        help='Command to run (if not reading from stdin)')
-    parser.add_argument('-t', '--timeout', type=float, metavar='SECONDS',
-                       help='Overall timeout in seconds (default: no timeout)')
-    parser.add_argument('--idle-timeout', type=float, metavar='SECONDS',
-                       help='Timeout if no output for N seconds (idle/hang detection)')
-    parser.add_argument('--first-output-timeout', type=float, metavar='SECONDS',
-                       help='Timeout if first output not seen within N seconds')
+    
+    # === Arguments in alphabetical order (by long form) ===
+    
+    parser.add_argument('-a', '--append', action='store_true',
+                       help='Append to log files instead of overwriting (like tee -a)')
+    parser.add_argument('--no-auto-log', '--no-log', action='store_true',
+                       help='Disable automatic log file creation (auto-log is enabled by default in command mode)')
+    parser.add_argument('--auto-tune', action='store_true',
+                       help='Automatically select optimal parameters based on telemetry (experimental)')
+    parser.add_argument('--color', choices=['always', 'auto', 'never'], default='auto',
+                       help='Colorize matched text (default: auto)')
     parser.add_argument('--delay-exit', type=float, metavar='SECONDS', default=None,
                        help='After match, continue reading for N seconds to capture error context (default: 10 for command mode, 0 for pipe mode)')
-    parser.add_argument('-m', '--max-count', type=int, default=1, metavar='NUM',
-                       help='Stop after NUM matches (default: 1, like grep -m)')
-    parser.add_argument('-i', '--ignore-case', action='store_true',
-                       help='Case-insensitive matching')
+    parser.add_argument('--delay-exit-after-lines', type=int, metavar='LINES', default=100,
+                       help='After match, exit early if N lines captured (default: 100). Whichever comes first: time or lines.')
     parser.add_argument('-E', '--extended-regexp', action='store_true',
                        help='Extended regex (default Python re module)')
-    parser.add_argument('-P', '--perl-regexp', action='store_true',
-                       help='Perl-compatible regex (requires regex module)')
-    parser.add_argument('-v', '--invert-match', action='store_true',
-                       help='Invert match - select non-matching lines')
-    parser.add_argument('-q', '--quiet', action='store_true',
-                       help='Quiet mode - suppress output, only exit code')
-    parser.add_argument('--verbose', action='store_true',
-                       help='Verbose output (show debug information)')
-    parser.add_argument('-n', '--line-number', action='store_true',
-                       help='Prefix output with line number')
-    parser.add_argument('--stderr', dest='match_stderr', action='store_const', 
-                       const='stderr', default='stdout',
-                       help='Match pattern against stderr instead of stdout (command mode only)')
-    parser.add_argument('--both', dest='match_stderr', action='store_const',
-                       const='both',
-                       help='Match pattern against both stdout and stderr (command mode only)')
     parser.add_argument('--fd', dest='monitor_fds', action='append', type=int, metavar='N',
                        help='Monitor file descriptor N (can be used multiple times, e.g., --fd 3 --fd 4)')
     parser.add_argument('--fd-pattern', dest='fd_patterns', action='append', nargs=2, 
@@ -904,17 +1045,60 @@ Exit codes:
                        help='Set specific pattern for file descriptor FD (e.g., --fd-pattern 3 "ERROR" --fd-pattern 2 "FATAL")')
     parser.add_argument('--fd-prefix', action='store_true',
                        help='Prefix output with stream labels [stdout]/[stderr]/[fd3] etc.')
-    # Keep --stderr-prefix as alias for backward compatibility
-    parser.add_argument('--stderr-prefix', dest='fd_prefix', action='store_true',
-                       help='Alias for --fd-prefix')
-    parser.add_argument('--color', choices=['always', 'auto', 'never'], default='auto',
-                       help='Colorize matched text (default: auto)')
+    parser.add_argument('--file-prefix', metavar='PREFIX',
+                       help='Save output to log files. Behavior: (1) No extension → PREFIX.log/PREFIX.errlog, '
+                            '(2) Ends with .log or .out → exact filename + .err for stderr. '
+                            'Examples: /tmp/test → test.log/test.errlog; /tmp/test.log → test.log/test.err')
+    parser.add_argument('--first-output-timeout', type=float, metavar='SECONDS',
+                       help='Timeout if first output not seen within N seconds')
+    parser.add_argument('-z', '--gzip', action='store_true',
+                       help='Compress log files with gzip after command completes (like tar -z, rsync -z). Saves 70-90% space.')
+    parser.add_argument('-i', '--ignore-case', action='store_true',
+                       help='Case-insensitive matching')
+    parser.add_argument('--idle-timeout', type=float, metavar='SECONDS',
+                       help='Timeout if no output for N seconds (idle/hang detection)')
+    parser.add_argument('-v', '--invert-match', action='store_true',
+                       help='Invert match - select non-matching lines')
+    parser.add_argument('-n', '--line-number', action='store_true',
+                       help='Prefix output with line number')
+    parser.add_argument('--list-profiles', action='store_true',
+                       help='List available profiles and exit')
+    parser.add_argument('--log-dir', metavar='DIR', default='/tmp',
+                       help='Directory for auto-generated logs (default: /tmp, used with --auto-log)')
+    parser.add_argument('-m', '--max-count', type=int, default=1, metavar='NUM',
+                       help='Stop after NUM matches (default: 1, like grep -m)')
     parser.add_argument('--no-telemetry', action='store_true',
                        help='Disable telemetry collection (also: EARLYEXIT_NO_TELEMETRY=1). No SQLite database created when disabled.')
+    parser.add_argument('-P', '--perl-regexp', action='store_true',
+                       help='Perl-compatible regex (requires regex module)')
+    parser.add_argument('--profile', metavar='NAME',
+                       help='Use a predefined profile (e.g., --profile npm, --profile pytest). Use --list-profiles to see available profiles.')
+    parser.add_argument('-q', '--quiet', action='store_true',
+                       help='Quiet mode - suppress all output to terminal (like grep -q). Log files still created if auto-logging enabled.')
+    parser.add_argument('--show-profile', metavar='NAME',
+                       help='Show details about a profile and exit')
     parser.add_argument('--source-file', metavar='FILE',
                        help='Source file being processed (for telemetry, auto-detected if possible)')
-    parser.add_argument('--auto-tune', action='store_true',
-                       help='Automatically select optimal parameters based on telemetry (experimental)')
+    parser.add_argument('--stderr', dest='match_stderr', action='store_const',
+                       const='stderr',
+                       help='Match pattern against stderr only (command mode only)')
+    parser.add_argument('--stderr-prefix', dest='fd_prefix', action='store_true',
+                       help='Alias for --fd-prefix (for backward compatibility)')
+    parser.add_argument('--stdout', dest='match_stderr', action='store_const', 
+                       const='stdout', default='both',
+                       help='Match pattern against stdout only (command mode only)')
+    parser.add_argument('-t', '--timeout', type=float, metavar='SECONDS',
+                       help='Overall timeout in seconds (default: no timeout)')
+    parser.add_argument('-u', '--unbuffered', action='store_true', default=True,
+                       help='Force unbuffered stdout/stderr for subprocess (DEFAULT, like stdbuf -o0 -e0). Ensures real-time output.')
+    parser.add_argument('--buffered', dest='unbuffered', action='store_false',
+                       help='Allow subprocess to use default buffering (disables real-time output, useful for high-throughput commands)')
+    parser.add_argument('--stdout-unbuffered', action='store_true',
+                       help='Force unbuffered stdout only for subprocess (advanced, use -u for both)')
+    parser.add_argument('--stderr-unbuffered', action='store_true',
+                       help='Force unbuffered stderr only for subprocess (advanced, use -u for both)')
+    parser.add_argument('--verbose', action='store_true',
+                       help='Verbose output (show debug information)')
     parser.add_argument('--version', action='version', version='%(prog)s 0.0.3')
     
     # Pre-process sys.argv to handle optional pattern when timeout is provided
@@ -961,6 +1145,49 @@ Exit codes:
     
     args = parser.parse_args(argv)
     
+    # Handle profile-related flags first (before other validation)
+    if hasattr(args, 'list_profiles') and args.list_profiles:
+        try:
+            from earlyexit.profiles import print_profile_list
+            print_profile_list(show_validation=True)
+        except ImportError:
+            print("❌ Profiles module not available", file=sys.stderr)
+        return 0
+    
+    if hasattr(args, 'show_profile') and args.show_profile:
+        try:
+            from earlyexit.profiles import print_profile_details
+            print_profile_details(args.show_profile)
+        except ImportError:
+            print("❌ Profiles module not available", file=sys.stderr)
+        return 0
+    
+    # Apply profile if specified
+    if hasattr(args, 'profile') and args.profile:
+        try:
+            from earlyexit.profiles import get_profile, apply_profile_to_args
+            profile = get_profile(args.profile)
+            if not profile:
+                print(f"❌ Profile '{args.profile}' not found", file=sys.stderr)
+                print("\nAvailable profiles (use --list-profiles for details):", file=sys.stderr)
+                from earlyexit.profiles import list_profiles
+                for name in sorted(list_profiles().keys()):
+                    print(f"  • {name}", file=sys.stderr)
+                return 3
+            
+            # Show which profile is being used
+            if not (hasattr(args, 'quiet') and args.quiet):
+                print(f"📋 Using profile: {args.profile}", file=sys.stderr)
+                if profile.get('validation'):
+                    f1 = profile['validation'].get('f1_score', 0)
+                    print(f"   F1 Score: {f1:.2%} | {profile.get('recommendation', 'N/A')}", file=sys.stderr)
+            
+            # Apply profile settings
+            args = apply_profile_to_args(profile, args)
+        except ImportError:
+            print("❌ Profiles module not available", file=sys.stderr)
+            return 3
+    
     # Validate arguments
     # Handle missing pattern - default to timeout-only mode if timeout options provided
     no_pattern_mode = False
@@ -969,6 +1196,7 @@ Exit codes:
     if args.pattern is None:
         # Pattern not provided - check if timeout options are present
         has_timeout = args.timeout or args.idle_timeout or args.first_output_timeout
+        has_command = len(args.command) > 0
         
         if has_timeout:
             # Timeout provided, pattern optional - use timeout-only mode
@@ -986,12 +1214,13 @@ Exit codes:
                     timeout_info.append(f"first-output: {args.first_output_timeout}s")
                 print(f"ℹ️  Timeout-only mode (no pattern specified) - {', '.join(timeout_info)}", file=sys.stderr)
         else:
-            # No pattern and no timeout - this is an error
+            # No pattern, no timeout, no command (pipe mode) - this is an error
             print("❌ Error: PATTERN is required", file=sys.stderr)
             print("", file=sys.stderr)
             print("Provide either:", file=sys.stderr)
             print("  1. A pattern: earlyexit 'ERROR' -- command", file=sys.stderr)
             print("  2. A timeout: earlyexit -t 30 -- command", file=sys.stderr)
+            print("  3. A command to watch: earlyexit command (watch mode, learns from you)", file=sys.stderr)
             print("", file=sys.stderr)
             print("Run 'earlyexit --help' for more information.", file=sys.stderr)
             return 2
@@ -1031,25 +1260,96 @@ Exit codes:
         print("Run 'earlyexit --help' for more information.", file=sys.stderr)
         return 2
     
-    # Check if pattern looks like a command name (common mistake: forgetting the pattern)
-    # e.g., "earlyexit echo ..." or "earlyexit -- echo ..." instead of "earlyexit 'ERROR' -- echo ..."
+    # Check if pattern looks like a command name
+    # This could be watch mode: earlyexit npm test (no pattern specified)
     common_commands = ['echo', 'cat', 'grep', 'ls', 'python', 'python3', 'node', 'bash', 'sh', 
-                       'npm', 'yarn', 'make', 'cmake', 'cargo', 'go', 'java', 'perl', 'ruby']
+                       'npm', 'yarn', 'make', 'cmake', 'cargo', 'go', 'java', 'perl', 'ruby',
+                       'pytest', 'jest', 'mocha', 'terraform', 'docker', 'kubectl', 'git']
     
-    if args.pattern in common_commands and len(args.command) > 0:
-        # Pattern is a command name AND there are command arguments
-        # This strongly suggests they forgot the pattern
-        print(f"❌ Error: Missing PATTERN argument", file=sys.stderr)
-        print("", file=sys.stderr)
-        print(f"It looks like you're trying to run: {args.pattern} {' '.join(args.command)}", file=sys.stderr)
-        print("But you forgot to specify what pattern to search for!", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Correct usage:", file=sys.stderr)
-        print(f"  earlyexit 'ERROR' -- {args.pattern} {' '.join(args.command)}", file=sys.stderr)
-        print(f"  earlyexit -t 30 -- {args.pattern} {' '.join(args.command)}  (timeout-only)", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Run 'earlyexit --help' for more information.", file=sys.stderr)
-        return 2
+    # Also check if pattern looks like a path to an executable
+    looks_like_command = (
+        args.pattern in common_commands or
+        (args.pattern and ('/' in args.pattern or args.pattern.startswith('.')))
+    )
+    
+    if looks_like_command:
+        # Pattern looks like a command → This is watch mode!
+        # Reconstruct the full command from pattern + command args
+        full_command = [args.pattern] + args.command
+        
+        # Enter watch mode
+        try:
+            from earlyexit.watch_mode import run_watch_mode
+            
+            # Detect project type (telemetry not initialized yet, so do it manually)
+            project_type = 'unknown'
+            try:
+                if TELEMETRY_AVAILABLE:
+                    from earlyexit.telemetry import TelemetryCollector
+                    temp_collector = TelemetryCollector()
+                    project_type = temp_collector._detect_project_type(' '.join(full_command))
+            except:
+                pass
+            
+            telemetry_start_time = time.time()
+            
+            # Generate execution ID for telemetry
+            execution_id = None
+            env_no_telemetry = os.environ.get('EARLYEXIT_NO_TELEMETRY', '').lower() in ('1', 'true', 'yes')
+            telemetry_enabled = TELEMETRY_AVAILABLE and not args.no_telemetry and not env_no_telemetry
+            
+            if telemetry_enabled:
+                try:
+                    execution_id = f"exec_{int(telemetry_start_time * 1000)}_{os.getpid()}"
+                except:
+                    pass
+            
+            # Check for smart suggestions (if telemetry enabled)
+            suggested_setting_id = None
+            if telemetry_enabled:
+                try:
+                    from earlyexit.telemetry import get_telemetry
+                    from earlyexit.suggestions import check_and_offer_suggestion
+                    
+                    telemetry_collector = get_telemetry()
+                    if telemetry_collector:
+                        suggested_setting_id = check_and_offer_suggestion(
+                            args, full_command, telemetry_collector
+                        )
+                except Exception:
+                    # Silently fail - don't disrupt user
+                    pass
+            
+            exit_code = run_watch_mode(full_command, args, os.getcwd(), project_type, execution_id)
+            
+            # Record to telemetry if enabled
+            if telemetry_enabled:
+                try:
+                    from earlyexit.telemetry import get_telemetry
+                    telemetry_collector = get_telemetry()
+                    if telemetry_collector and telemetry_collector.enabled:
+                        telemetry_data = {
+                            'command': ' '.join(full_command),
+                            'pattern': '<watch mode>',
+                            'exit_code': exit_code,
+                            'exit_reason': 'watch_mode_interrupt' if exit_code == 130 else 'watch_mode_complete',
+                            'total_runtime': time.time() - telemetry_start_time,
+                            'timestamp': telemetry_start_time,
+                            'project_type': project_type,
+                        }
+                        # Record execution with the same execution_id used in watch mode
+                        if execution_id:
+                            telemetry_data['execution_id'] = execution_id
+                        telemetry_collector.record_execution(telemetry_data)
+                except:
+                    pass
+            
+            return exit_code
+        except Exception as e:
+            print(f"❌ Error in watch mode: {e}", file=sys.stderr)
+            import traceback
+            traceback.print_exc()
+            return 1
     
     # Initialize telemetry (opt-out, enabled by default)
     # Can be disabled via --no-telemetry flag or EARLYEXIT_NO_TELEMETRY env var
@@ -1247,11 +1547,14 @@ Exit codes:
                 args.delay_exit = 0  # No delay by default in pipe mode (backward compatible)
             
             match_count = [0]  # Use list for consistency with command mode
+            post_match_lines = [0]  # Track lines captured after match
             match_timestamp = [0]  # Track match time for delay
             source_file_container = [source_file]  # Mutable container for dynamic detection
             lines_processed = process_stream(sys.stdin, pattern, args, 0, match_count, use_color, 
-                                            "stdin", None, None, match_timestamp,
-                                            telemetry_collector, execution_id, telemetry_start_time, source_file_container)
+                                            "stdin", None, None, None,
+                                            match_timestamp,
+                                            telemetry_collector, execution_id, telemetry_start_time, source_file_container,
+                                            post_match_lines)
             
             # Handle delay-exit in pipe mode if match was found
             if match_count[0] > 0 and args.delay_exit and args.delay_exit > 0 and match_timestamp[0] > 0:

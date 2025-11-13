@@ -1,0 +1,134 @@
+{
+  "version": "1.0",
+  "contributor": "example-user",
+  "contribution_date": "2024-11-12",
+  "tool": "pytest",
+  "project_type": "python",
+  "use_case": "Testing data science and ML projects",
+  "context": {
+    "project_size": "medium (500-1000 tests)",
+    "avg_test_duration": "5-10 minutes",
+    "test_environment": "local development + CI/CD"
+  },
+  "patterns": [
+    {
+      "pattern": "FAILED|ERROR|AssertionError",
+      "pattern_type": "python_re",
+      "description": "Catches pytest test failures and errors",
+      "configuration": {
+        "case_insensitive": false,
+        "delay_exit": 10,
+        "delay_exit_after_lines": 100,
+        "idle_timeout": 30,
+        "overall_timeout": 600
+      },
+      "validation": {
+        "tested_on": {
+          "runs": 50,
+          "period": "2 weeks",
+          "environments": ["local", "GitHub Actions"]
+        },
+        "metrics": {
+          "true_positives": 18,
+          "true_negatives": 28,
+          "false_positives": 2,
+          "false_negatives": 2,
+          "precision": 0.90,
+          "recall": 0.90,
+          "f1_score": 0.90,
+          "accuracy": 0.92
+        }
+      },
+      "recommendation": "HIGHLY_RECOMMENDED",
+      "notes": [
+        "Works well for unit tests and integration tests",
+        "10s delay captures full pytest output including diffs",
+        "False positives occurred with tests that intentionally check error handling",
+        "False negatives were tests that timeout before failing (need idle_timeout)",
+        "Consider adding 'Traceback' to pattern for more comprehensive error detection"
+      ],
+      "known_issues": [
+        "May exit early if test name contains 'ERROR' or 'FAILED'",
+        "Doesn't catch hanging tests (use --idle-timeout for that)"
+      ],
+      "improvements": [
+        "For verbose test suites, increase delay_exit to 15s",
+        "For fast-failing tests, reduce delay_exit to 5s"
+      ]
+    },
+    {
+      "pattern": "(?i)(error|failed|failure|exception|traceback)",
+      "pattern_type": "python_re",
+      "description": "More comprehensive error detection for pytest",
+      "configuration": {
+        "case_insensitive": true,
+        "delay_exit": 10,
+        "overall_timeout": 600
+      },
+      "validation": {
+        "tested_on": {
+          "runs": 30,
+          "period": "1 week",
+          "environments": ["local"]
+        },
+        "metrics": {
+          "true_positives": 12,
+          "true_negatives": 15,
+          "false_positives": 3,
+          "false_negatives": 0,
+          "precision": 0.80,
+          "recall": 1.00,
+          "f1_score": 0.89,
+          "accuracy": 0.90
+        }
+      },
+      "recommendation": "USE_WITH_CAUTION",
+      "notes": [
+        "Catches more errors (100% recall) but has more false positives",
+        "Case-insensitive helps catch ERROR, Error, error variants",
+        "False positives from test output that mentions errors as examples"
+      ]
+    }
+  ],
+  "time_savings": {
+    "avg_failed_test_duration_without_earlyexit": "8 minutes",
+    "avg_exit_time_with_earlyexit": "45 seconds",
+    "avg_time_saved_per_failure": "7.25 minutes",
+    "total_failures_during_testing": 20,
+    "total_time_saved": "145 minutes (2.4 hours)",
+    "period": "2 weeks"
+  },
+  "alternative_patterns": [
+    {
+      "pattern": "FAILED.*test_",
+      "description": "Only catch actual test failures, not errors in test setup",
+      "recommendation": "EXPERIMENTAL",
+      "notes": "More specific but might miss some errors"
+    },
+    {
+      "pattern": "===.*failed",
+      "description": "Match pytest's summary line",
+      "recommendation": "NOT_RECOMMENDED",
+      "notes": "Appears at the end, defeats purpose of early exit"
+    }
+  ],
+  "tips": [
+    "Use watch mode first to learn patterns specific to your project",
+    "Start with conservative patterns, expand if you're missing errors",
+    "In CI/CD, prefer high recall (catch all errors) over precision",
+    "In local dev, prefer high precision (avoid false alarms)"
+  ],
+  "related_tools": [
+    {
+      "tool": "unittest",
+      "pattern": "FAIL:|ERROR:",
+      "notes": "Similar pattern works for Python's unittest module"
+    },
+    {
+      "tool": "nose",
+      "pattern": "FAILED|ERROR",
+      "notes": "Nose uses similar output format to pytest"
+    }
+  ]
+}
+

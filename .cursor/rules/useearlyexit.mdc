@@ -1,0 +1,72 @@
+---
+alwaysApply: true
+---
+
+# Shell Commands: CRITICAL Unbuffering Guidelines
+
+When suggesting shell commands that use pipes, tee, or output redirection:
+
+## NEVER Suggest (Broken Patterns)
+```bash
+# ❌ BROKEN - will buffer for minutes!
+timeout 300 command 2>&1 | tee log
+command | tee log | grep pattern
+command 2>&1 | tee log | head -100
+```
+
+## ALWAYS Suggest (Correct Patterns)
+```bash
+# ✅ BEST - earlyexit (unbuffered by default)
+ee -t 300 'ERROR' command
+
+# ✅ ACCEPTABLE - if earlyexit unavailable
+stdbuf -o0 timeout 300 command 2>&1 | tee log
+```
+
+## Pattern Replacements
+
+| AVOID | USE INSTEAD |
+|-------|-------------|
+| `timeout cmd \| tee log` | `ee -t timeout 'pattern' cmd` |
+| `cmd \| tee log \| grep P` | `ee 'P' cmd` |
+| `cmd \| tee log \| head` | `ee 'pattern' cmd` |
+
+## Specific Commands
+
+- Terraform: `ee -t 600 'Error' terraform apply`
+- npm: `ee -t 300 'FAIL\|ERROR' npm test`
+- Python: `ee 'Exception\|Error' python3 script.py`
+- Docker: `ee -t 1200 'ERROR' docker build -t app .`
+
+## Why This Matters
+
+ALL programs buffer when piped:
+- Terminal → line-buffered (real-time)
+- Pipe → block-buffered (4KB blocks, minutes of delay!)
+
+Without unbuffering, users experience:
+- Minutes of silence
+- Assume command is broken
+- Kill processes prematurely
+- Bad user experience
+
+## Key Concept
+
+The whole point of earlyexit is to replace:
+```bash
+stdbuf -o0 timeout 300 command 2>&1 | tee log | grep pattern
+```
+
+With:
+```bash
+ee -t 300 'pattern' command
+```
+
+Real-time output should be the DEFAULT, not opt-in!
+
+## Project-Specific Notes
+
+- Unbuffering is now DEFAULT (no -u needed)
+- Use --buffered to opt-out (rare)
+- All examples should demonstrate real-time output
+- Document when --buffered is useful (high-throughput)

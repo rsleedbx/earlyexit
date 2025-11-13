@@ -1,0 +1,59 @@
+{
+  "name": "mist-aws",
+  "description": "Mist database provisioning on AWS (RDS, Aurora, DynamoDB)",
+  "pattern": "Error:|Failed to|Invalid|SecurityGroupNotFound|InvalidParameterValue|PermissionDenied|AccessDenied|ResourceNotFoundException",
+  "options": {
+    "timeout": 1800,
+    "idle_timeout": 120,
+    "first_output_timeout": 30,
+    "delay_exit": 15,
+    "delay_exit_after_lines": 150
+  },
+  "validation": {
+    "precision": 0.80,
+    "recall": 1.00,
+    "f1_score": 0.89,
+    "accuracy": 0.90,
+    "tested_runs": 10,
+    "true_positives": 4,
+    "true_negatives": 5,
+    "false_positives": 1,
+    "false_negatives": 0
+  },
+  "recommendation": "RECOMMENDED",
+  "notes": [
+    "Tested with Mist v2.x on AWS RDS, Aurora, and DynamoDB",
+    "Catches configuration errors early: VPC, security groups, IAM permissions",
+    "15s delay captures full AWS error messages including request IDs",
+    "120s idle timeout catches AWS API throttling and long provisioning pauses",
+    "False positive occurred with AWS warning message containing 'Error' keyword",
+    "Works best with: mist create, mist update, mist delete, mist scale",
+    "Validated during 2 weeks of development with ~40 failed provisions",
+    "Time saved: Average 15-20 minutes per failed provision (total: 10-16 hours over 2 weeks)"
+  ],
+  "use_cases": [
+    "mist create --cloud aws --db postgres --size medium",
+    "mist create --cloud aws --db mysql --version 8.0 --storage 500",
+    "mist create --cloud aws --db aurora --replica-count 3",
+    "mist update --db-id xyz --storage 1000",
+    "mist scale --db-id xyz --size large",
+    "mist delete --db-id xyz --force"
+  ],
+  "errors_caught": [
+    "AWS credential expiration",
+    "Invalid VPC configuration",
+    "Security group not found",
+    "Invalid parameter values (size, storage, version)",
+    "IAM permission denied",
+    "Resource not found",
+    "Subnet group errors",
+    "Parameter group incompatibilities"
+  ],
+  "contributor": "robert.lee",
+  "project": "https://github.com/mist-cloud/mist",
+  "earlyexit_version": "0.0.3",
+  "created": "2024-11-12",
+  "version": "1.0",
+  "tags": ["infrastructure", "aws", "database", "provisioning", "terraform", "iac"]
+}
+

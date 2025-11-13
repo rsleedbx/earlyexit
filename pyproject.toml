@@ -30,6 +30,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "typer>=0.9.0",    # Modern CLI framework with type hints
     "psutil>=5.8.0",   # For inspecting subprocess file descriptors
     "tenacity>=8.0.0"  # For retry with exponential backoff
 ]
@@ -39,12 +40,15 @@ perl = ["regex"]  # For Perl-compatible regex (-P flag)
 
 [project.scripts]
 earlyexit = "earlyexit.cli:main"
+ee = "earlyexit.cli:main"  # Short alias for convenience
 earlyexit-stats = "earlyexit.telemetry_cli:main"
 earlyexit-analyze = "earlyexit.telemetry_cli:main"
 earlyexit-feedback = "earlyexit.telemetry_cli:main"
-earlyexit-export = "earlyexit.telemetry_cli:main"
+earlyexit-export = "earlyexit.export_cli:main_export"
+earlyexit-import = "earlyexit.export_cli:main_import"
 earlyexit-clear = "earlyexit.telemetry_cli:main"
 earlyexit-suggest = "earlyexit.telemetry_cli:main"
+earlyexit-profile = "earlyexit.profile_cli:main"
 
 [project.urls]
 Homepage = "https://github.com/rsleedbx/earlyexit"

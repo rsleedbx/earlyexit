@@ -1,0 +1,81 @@
+{
+  "_comment": "Complete profile format showing ALL possible options",
+  "_comment2": "This is a reference/example - not a real profile to use",
+  
+  "name": "complete-example",
+  "description": "Complete example showing all possible profile options",
+  
+  "pattern": "ERROR|FAIL|CRASH",
+  
+  "options": {
+    "_comment": "ALL command-line options can be specified here",
+    
+    "// TIMEOUTS //": "---",
+    "timeout": 1800,
+    "idle_timeout": 30,
+    "first_output_timeout": 10,
+    
+    "// DELAY EXIT (error context capture) //": "---",
+    "delay_exit": 10,
+    "delay_exit_after_lines": 100,
+    
+    "// MATCH BEHAVIOR //": "---",
+    "max_count": 1,
+    "ignore_case": false,
+    "case_insensitive": false,
+    "perl_regexp": false,
+    "extended_regexp": true,
+    "invert_match": false,
+    
+    "// OUTPUT CONTROL //": "---",
+    "quiet": false,
+    "verbose": false,
+    "line_number": false,
+    "color": "auto",
+    
+    "// STREAM SELECTION //": "---",
+    "match_stderr": "both",
+    "stdout": false,
+    "stderr": false,
+    
+    "// FD MONITORING (advanced) //": "---",
+    "monitor_fds": [3, 4],
+    "fd_patterns": [
+      [3, "DEBUG.*Error"],
+      [4, "TRACE.*Exception"]
+    ],
+    "fd_prefix": true,
+    "stderr_prefix": false,
+    
+    "// TELEMETRY //": "---",
+    "no_telemetry": false,
+    "source_file": null
+  },
+  
+  "validation": {
+    "precision": 0.90,
+    "recall": 0.88,
+    "f1_score": 0.89,
+    "accuracy": 0.89,
+    "tested_runs": 50,
+    "true_positives": 44,
+    "true_negatives": 41,
+    "false_positives": 5,
+    "false_negatives": 6
+  },
+  
+  "recommendation": "HIGHLY_RECOMMENDED",
+  
+  "notes": [
+    "This is a reference showing all possible options",
+    "You don't need to specify every option",
+    "Only include options you want to override from defaults",
+    "User's command-line flags always override profile options"
+  ],
+  
+  "contributor": "earlyexit-maintainers",
+  "source": "https://github.com/rsleedbx/earlyexit",
+  "created": "2024-11-12",
+  "version": "1.0"
+}
+
