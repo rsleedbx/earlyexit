@@ -148,9 +148,11 @@ def map_exit_code(code: int, use_unix_convention: bool) -> int:
         Grep convention (default):     Unix convention (--unix-exit-codes):
         0 = pattern matched            0 = success (no error found)
         1 = no match                   1 = error found (pattern matched)
-        2 = timeout                    2 = timeout (unchanged)
+        2 = timeout/stuck              2 = timeout/stuck (unchanged)
         3 = CLI error                  3 = CLI error (unchanged)
         4 = detached                   4 = detached (unchanged)
+        5 = unexpected output          5 = unexpected output (unchanged)
+        6 = coverage failed            6 = coverage failed (unchanged)
         130 = interrupted              130 = interrupted (unchanged)
     """
     # Update environment file with exit code
@@ -486,6 +488,38 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     state_order = transition_states.split('>') if transition_states else []
     last_state_index = -1
     
+    # Expect patterns: allowlist/coverage detection
+    expect_patterns = getattr(args, 'expect_patterns', None) or []
+    expect_only = getattr(args, 'expect_only', False)
+    expect_all = getattr(args, 'expect_all', False)
+    unexpected_patterns = getattr(args, 'unexpected_patterns', None) or []
+    on_unexpected = getattr(args, 'on_unexpected', 'exit')
+    
+    # Compile expect and unexpected patterns
+    expect_compiled = []
+    if expect_patterns:
+        import re
+        for ep in expect_patterns:
+            try:
+                flags = re.IGNORECASE if args.ignore_case else 0
+                expect_compiled.append((ep, re.compile(ep, flags)))
+            except re.error as e:
+                print(f"Warning: Invalid expect pattern '{ep}': {e}", file=sys.stderr)
+    
+    unexpected_compiled = []
+    if unexpected_patterns:
+        import re
+        for up in unexpected_patterns:
+            try:
+                flags = re.IGNORECASE if args.ignore_case else 0
+                unexpected_compiled.append((up, re.compile(up, flags)))
+            except re.error as e:
+                print(f"Warning: Invalid unexpected pattern '{up}': {e}", file=sys.stderr)
+    
+    # Track which expect patterns have been seen (for --expect-all)
+    expect_seen = {pattern_str: False for pattern_str, _ in expect_compiled}
+    unexpected_lines = []  # Collect unexpected lines for warn/error modes
+    
     # Context buffer for capturing lines before matches (like grep -B)
     context_buffer = []
     context_size = getattr(args, 'before_context', 0)  # Number of lines to keep
@@ -635,6 +669,57 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
             # If line is excluded, skip pattern matching
             if excluded:
                 continue
+            
+            # Check unexpected patterns (blocklist) - immediate action
+            if unexpected_compiled:
+                for unexpected_str, unexpected_re in unexpected_compiled:
+                    if unexpected_re.search(line_stripped):
+                        # Unexpected pattern found!
+                        if not args.quiet:
+                            print(f"\n⛔ Unexpected output detected!", file=sys.stderr)
+                            print(f"   Pattern: {unexpected_str}", file=sys.stderr)
+                            print(f"   Line: {line_stripped}", file=sys.stderr)
+                        
+                        # Exit immediately (exit code 5 for unexpected output)
+                        if stuck_detected is not None:
+                            stuck_detected[0] = True  # Use stuck flag to trigger exit
+                        # Set a special marker that this was unexpected
+                        if match_type is not None:
+                            match_type[0] = 'unexpected'
+                        return 5  # Exit code 5 = unexpected output
+            
+            # Check expect patterns (allowlist)
+            if expect_compiled:
+                line_matches_expect = False
+                for expect_str, expect_re in expect_compiled:
+                    if expect_re.search(line_stripped):
+                        line_matches_expect = True
+                        # Mark this pattern as seen (for --expect-all)
+                        if expect_all:
+                            expect_seen[expect_str] = True
+                        break
+                
+                # If line doesn't match any expect pattern
+                if not line_matches_expect:
+                    unexpected_lines.append((line_number, line_stripped))
+                    
+                    # Handle unexpected output based on --on-unexpected
+                    if on_unexpected == 'exit' or expect_only:
+                        # Immediate termination
+                        if not args.quiet:
+                            print(f"\n⛔ Unexpected output detected (not in allowlist)!", file=sys.stderr)
+                            print(f"   Line {line_number}: {line_stripped}", file=sys.stderr)
+                            print(f"   Expected patterns:", file=sys.stderr)
+                            for expect_str, _ in expect_compiled:
+                                print(f"     - {expect_str}", file=sys.stderr)
+                        return 5  # Exit code 5 = unexpected output
+                    
+                    elif on_unexpected == 'warn':
+                        # Print warning but continue
+                        if not args.quiet:
+                            print(f"⚠️  Unexpected line {line_number}: {line_stripped}", file=sys.stderr)
+                    
+                    # For 'error' mode, collect and report at end
             
             # Check for success pattern first (if provided)
             if success_pattern:
@@ -798,6 +883,27 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     except Exception as e:
         if not args.quiet:
             print(f"❌ Error processing {stream_name}: {e}", file=sys.stderr, flush=True)
+    
+    # Check --expect-all coverage: were all expected patterns seen?
+    if expect_all and expect_compiled:
+        missing_patterns = [pattern_str for pattern_str, seen in expect_seen.items() if not seen]
+        if missing_patterns:
+            if not args.quiet:
+                print(f"\n❌ Coverage check failed: Not all expected patterns were seen!", file=sys.stderr)
+                print(f"   Missing patterns:", file=sys.stderr)
+                for mp in missing_patterns:
+                    print(f"     - {mp}", file=sys.stderr)
+            return 6  # Exit code 6 = coverage failure
+    
+    # Check --on-unexpected error mode: report collected unexpected lines
+    if on_unexpected == 'error' and unexpected_lines:
+        if not args.quiet:
+            print(f"\n❌ Unexpected output detected ({len(unexpected_lines)} line(s)):", file=sys.stderr)
+            for line_num, line_content in unexpected_lines[:10]:  # Show first 10
+                print(f"   Line {line_num}: {line_content}", file=sys.stderr)
+            if len(unexpected_lines) > 10:
+                print(f"   ... and {len(unexpected_lines) - 10} more", file=sys.stderr)
+        return 5  # Exit code 5 = unexpected output
     
     return line_number - line_number_offset
 
@@ -2137,6 +2243,21 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Define forward-only state transitions (requires --max-repeat). '
                             'Format: "STATE1>STATE2>STATE3" (e.g., "IDLE>RUNNING>COMPLETED"). '
                             'Detects regressions when state moves backward in the sequence.')
+    parser.add_argument('--expect', action='append', metavar='PATTERN', dest='expect_patterns',
+                       help='Expected output pattern (allowlist). Lines not matching ANY expect pattern are unexpected. '
+                            'Can be repeated. Use with --on-unexpected to control behavior.')
+    parser.add_argument('--expect-only', action='store_true',
+                       help='Strict mode: EVERY line must match an --expect pattern. '
+                            'Exit immediately on unexpected output (exit code 5).')
+    parser.add_argument('--expect-all', action='store_true',
+                       help='Coverage mode: ALL --expect patterns must be seen before command completes. '
+                            'Exit with error (exit code 6) if any patterns are missing.')
+    parser.add_argument('--unexpected', action='append', metavar='PATTERN', dest='unexpected_patterns',
+                       help='Unexpected output pattern (blocklist). Exit immediately if seen. '
+                            'Can be repeated. Useful with --expect for dual allowlist+blocklist.')
+    parser.add_argument('--on-unexpected', choices=['warn', 'error', 'exit'], default='exit',
+                       help='Action on unexpected output: warn (print to stderr), error (exit with code 5 at end), '
+                            'exit (immediate termination, default for AI testing).')
     parser.add_argument('--stderr-idle-exit', type=float, metavar='SECONDS',
                        help='Exit after stderr has been idle for N seconds (after seeing stderr output). '
                             'Useful for detecting when error messages have finished printing. '
@@ -2879,6 +3000,19 @@ Exit codes (Unix convention, --unix-exit-codes):
             stop_reading[0] = True
             if output_timeout_thread:
                 output_timeout_thread.join(timeout=0.5)
+            
+            # Check for special exit codes from process_stream
+            # Exit codes 5 and 6 indicate unexpected output or coverage failures
+            if lines_processed == 5:
+                # Unexpected output detected
+                record_telemetry(5, 'unexpected_output')
+                exit_code = map_exit_code(5, args.unix_exit_codes)
+                return exit_code
+            elif lines_processed == 6:
+                # Coverage check failed (--expect-all)
+                record_telemetry(6, 'coverage_failed')
+                exit_code = map_exit_code(6, args.unix_exit_codes)
+                return exit_code
             
             # Check if stuck was detected
             if stuck_detected[0]:
