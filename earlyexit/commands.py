@@ -91,9 +91,19 @@ def cmd_stats(args):
                 print(f"  Min runtime:       {timing[1]:.2f}s")
                 print(f"  Max runtime:       {timing[2]:.2f}s")
     
+    # Get database size
+    db_size_mb = collector.get_db_size_mb()
+    
     print("\n" + "=" * 60)
     print(f"Database: {collector.db_path}")
+    print(f"Size: {db_size_mb:.1f} MB")
     print("=" * 60)
+    
+    # Show cleanup suggestion if database is large
+    if db_size_mb > 100:
+        print(f"\n💡 Tip: Database is large ({db_size_mb:.0f} MB)")
+        print("   Run 'ee-clear --older-than 30d' to clean up old data")
+        print("   Or 'ee-clear --keep-learned' to keep only learned patterns")
     
     return 0
 
@@ -389,7 +399,42 @@ def cmd_clear(args):
     import os
     from datetime import datetime, timedelta
     
-    if args.older_than:
+    # Get current stats
+    with collector._get_connection() as conn:
+        if not conn:
+            print("❌ Could not connect to database.", file=sys.stderr)
+            return 1
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM executions")
+        total_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM learned_settings WHERE is_active = 1")
+        learned_count = cursor.fetchone()[0]
+    
+    if total_count == 0:
+        print("⚠️  No records to delete.")
+        return 0
+    
+    # Show current database size
+    db_size_before = collector.get_db_size_mb()
+    
+    if hasattr(args, 'keep_learned') and args.keep_learned:
+        # Delete execution history but keep learned settings
+        print(f"⚠️  This will delete {total_count} execution records")
+        print(f"   but keep {learned_count} learned settings.")
+        
+        if not args.yes:
+            response = input("Continue? [y/N] ")
+            if response.lower() != 'y':
+                print("Cancelled.")
+                return 0
+        
+        collector.clear_executions_only()
+        print(f"✅ Deleted {total_count} execution records")
+        print(f"   Kept {learned_count} learned settings")
+    
+    elif args.older_than:
         # Parse duration (e.g., "30d", "7d", "90d")
         try:
             if args.older_than.endswith('d'):
@@ -400,27 +445,25 @@ def cmd_clear(args):
             cutoff_time = (datetime.now() - timedelta(days=days)).timestamp()
             
             with collector._get_connection() as conn:
-                if conn:
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT COUNT(*) FROM executions WHERE timestamp < ?", (cutoff_time,))
-                    count = cursor.fetchone()[0]
-                    
-                    if count == 0:
-                        print(f"⚠️  No records older than {days} days found.")
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM executions WHERE timestamp < ?", (cutoff_time,))
+                count = cursor.fetchone()[0]
+                
+                if count == 0:
+                    print(f"⚠️  No records older than {days} days found.")
+                    return 0
+                
+                print(f"⚠️  This will delete {count} records older than {days} days.")
+                print(f"   Learned settings will be preserved.")
+                
+                if not args.yes:
+                    response = input("Continue? [y/N] ")
+                    if response.lower() != 'y':
+                        print("Cancelled.")
                         return 0
-                    
-                    print(f"⚠️  This will delete {count} records older than {days} days.")
-                    
-                    if not args.yes:
-                        response = input("Continue? [y/N] ")
-                        if response.lower() != 'y':
-                            print("Cancelled.")
-                            return 0
-                    
-                    cursor.execute("DELETE FROM executions WHERE timestamp < ?", (cutoff_time,))
-                    conn.commit()
-                    
-                    print(f"✅ Deleted {count} old records.")
+            
+            collector.clear_older_than(days)
+            print(f"✅ Deleted {count} old records")
         
         except ValueError:
             print(f"❌ Invalid duration: {args.older_than}", file=sys.stderr)
@@ -428,32 +471,27 @@ def cmd_clear(args):
             return 1
     
     elif args.all:
-        with collector._get_connection() as conn:
-            if conn:
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM executions")
-                count = cursor.fetchone()[0]
-                
-                if count == 0:
-                    print("⚠️  No records to delete.")
-                    return 0
-                
-                print(f"⚠️  This will delete ALL {count} telemetry records.")
-                
-                if not args.yes:
-                    response = input("Continue? [y/N] ")
-                    if response.lower() != 'y':
-                        print("Cancelled.")
-                        return 0
-                
-                cursor.execute("DELETE FROM executions")
-                conn.commit()
-                
-                print(f"✅ Deleted all {count} records.")
+        print(f"⚠️  This will delete ALL {total_count} telemetry records")
+        print(f"   including {learned_count} learned settings.")
+        
+        if not args.yes:
+            response = input("Continue? [y/N] ")
+            if response.lower() != 'y':
+                print("Cancelled.")
+                return 0
+        
+        collector.clear_all_data()
+        print(f"✅ Deleted all {total_count} records")
     
     else:
-        print("❌ Specify --older-than or --all", file=sys.stderr)
+        print("❌ Specify --older-than, --keep-learned, or --all", file=sys.stderr)
         return 1
+    
+    # Show space reclaimed
+    db_size_after = collector.get_db_size_mb()
+    space_saved = db_size_before - db_size_after
+    if space_saved > 0.1:
+        print(f"💾 Space reclaimed: {space_saved:.1f} MB (was {db_size_before:.1f} MB, now {db_size_after:.1f} MB)")
     
     return 0
 

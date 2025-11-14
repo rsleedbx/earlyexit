@@ -2,41 +2,99 @@
 alwaysApply: true
 ---
 
-# Shell Commands: CRITICAL Unbuffering Guidelines
+# Shell Commands: MANDATORY earlyexit Usage
 
-When suggesting shell commands that use pipes, tee, or output redirection:
+**CRITICAL:** You MUST use `ee` (earlyexit) for ALL long-running commands. The patterns `timeout | tee`, `tee | grep`, and `tee | head` are FORBIDDEN and will cause minutes of buffering delays.
 
-## NEVER Suggest (Broken Patterns)
+## ❌ FORBIDDEN PATTERNS (DO NOT USE)
 ```bash
-# ❌ BROKEN - will buffer for minutes!
-timeout 300 command 2>&1 | tee log
-command | tee log | grep pattern
+# These patterns are BROKEN and cause buffering delays:
+timeout 1800 command 2>&1 | tee log
+timeout 1800 command 2>&1 | tee log | grep pattern
+command 2>&1 | tee log | grep -A 3 pattern
 command 2>&1 | tee log | head -100
 ```
 
-## ALWAYS Suggest (Correct Patterns)
+## ✅ REQUIRED PATTERNS (USE THESE)
 ```bash
-# ✅ BEST - earlyexit (unbuffered by default)
-ee -t 300 'ERROR' command
+# ALWAYS use ee for long-running commands:
+ee -t 1800 'pattern' command
+ee -t 1800 'ERROR|FAIL|success' command
 
-# ✅ ACCEPTABLE - if earlyexit unavailable
-stdbuf -o0 timeout 300 command 2>&1 | tee log
+# If you need logs, ee creates them automatically:
+ee -t 1800 --file-prefix /tmp/mylog 'pattern' command
+# Creates: /tmp/mylog.log and /tmp/mylog.err
+
+# For pattern matching with context:
+ee -t 1800 'Database created successfully|Instance ID' command
 ```
 
-## Pattern Replacements
+## Exact Pattern Replacements
 
-| AVOID | USE INSTEAD |
-|-------|-------------|
-| `timeout cmd \| tee log` | `ee -t timeout 'pattern' cmd` |
-| `cmd \| tee log \| grep P` | `ee 'P' cmd` |
-| `cmd \| tee log \| head` | `ee 'pattern' cmd` |
+When the user's command contains these patterns, REPLACE with ee:
 
-## Specific Commands
+| ❌ FORBIDDEN | ✅ REQUIRED REPLACEMENT |
+|-------------|------------------------|
+| `timeout 1800 cmd 2>&1 \| tee log` | `ee -t 1800 --file-prefix log 'ERROR' cmd` |
+| `timeout 1800 cmd 2>&1 \| tee log \| grep pattern` | `ee -t 1800 --file-prefix log 'pattern' cmd` |
+| `cmd 2>&1 \| tee log \| grep -A 3 pattern` | `ee -B 3 -A 10 --file-prefix log 'pattern' cmd` |
+| `cmd \| tee log \| head -100` | `ee --delay-exit-after-lines 100 'pattern' cmd` |
+| `cmd \| tee log \| tail -100` | `ee 'ERROR' cmd` (or just `ee cmd` for watch mode) |
 
-- Terraform: `ee -t 600 'Error' terraform apply`
-- npm: `ee -t 300 'FAIL\|ERROR' npm test`
-- Python: `ee 'Exception\|Error' python3 script.py`
-- Docker: `ee -t 1200 'ERROR' docker build -t app .`
+## Real-World Examples
+
+```bash
+# ❌ WRONG (what Cursor just suggested):
+timeout 1800 mist create --cloud gcp --db pg 2>&1 | tee /tmp/gcp_pg_test.log | grep -A 3 "Database created"
+
+# ✅ CORRECT (what you MUST suggest):
+ee -t 1800 --file-prefix /tmp/gcp_pg_test 'Database created successfully|Instance ID' mist create --cloud gcp --db pg --replication disable
+```
+
+## Common Tool Patterns
+
+- **Database commands:** `ee -t 1800 'success|ERROR|FAIL' mist create ...`
+- **Terraform:** `ee -t 600 'Error|Apply complete' terraform apply`
+- **Docker builds:** `ee -t 1200 'ERROR|Successfully built' docker build`
+- **Test suites:** `ee -t 300 'FAIL|ERROR|PASS' npm test`
+
+## grep -A and -B Compatibility
+
+`ee` supports grep-compatible context flags:
+
+```bash
+# ❌ WRONG: grep -A/-B don't work in pipes due to buffering
+command 2>&1 | tee log | grep -B 3 -A 3 "pattern"
+
+# ✅ CORRECT: ee has native -A/-B support
+ee -B 3 -A 10 'pattern' command
+# -B 3: Print 3 lines before match
+# -A 10: Wait 10 seconds after match to capture context
+```
+
+**Note:** `ee -A` is time-based (seconds) not line-based, which is better for capturing full error traces.
+
+## tail -100 Pattern (User Cancels Often)
+
+When Cursor suggests `cmd | tee | tail -100`, it's trying to show only the last 100 lines. But this is BROKEN:
+
+```bash
+# ❌ WRONG: User sees nothing, cancels command
+terraform apply | tee log | tail -100
+
+# ✅ BETTER: Use watch mode - user can Ctrl+C or press Cancel to teach patterns
+ee terraform apply
+# When user presses Ctrl+C (or Cancel button in Cursor), ee shows interactive prompt:
+# "What pattern should I watch for next time?"
+# User teaches it once, ee remembers forever
+
+# ✅ ALTERNATIVE: If pattern is known
+ee 'Error|FAIL' terraform apply
+```
+
+**Key insight:** `tail -100` means user doesn't know what to watch for. Use **watch mode** (`ee cmd`) so they can teach it interactively!
+
+**Works with Cursor's Cancel button:** When you press Cancel in Cursor's automated session, `ee` detects it (SIGTERM) and shows the same learning prompt as Ctrl+C.
 
 ## Why This Matters
 
@@ -64,9 +122,9 @@ ee -t 300 'pattern' command
 
 Real-time output should be the DEFAULT, not opt-in!
 
-## Project-Specific Notes
+## Summary
 
-- Unbuffering is now DEFAULT (no -u needed)
-- Use --buffered to opt-out (rare)
-- All examples should demonstrate real-time output
-- Document when --buffered is useful (high-throughput)
+- ❌ NEVER suggest: `timeout | tee`, `tee | grep`, `tee | head`
+- ✅ ALWAYS suggest: `ee -t timeout 'pattern' command`
+- ✅ For logs: Add `--file-prefix /tmp/logname`
+- ✅ For context: Add `--delay-exit 10`

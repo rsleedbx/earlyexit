@@ -73,8 +73,10 @@ def main():
             )
             parser.add_argument('--older-than', metavar='DAYS',
                               help='Delete records older than N days (e.g., 30d)')
+            parser.add_argument('--keep-learned', action='store_true',
+                              help='Delete execution history but keep learned settings')
             parser.add_argument('--all', action='store_true',
-                              help='Delete all telemetry data')
+                              help='Delete all telemetry data (including learned settings)')
             parser.add_argument('--yes', '-y', action='store_true',
                               help='Skip confirmation prompt')
             args = parser.parse_args()

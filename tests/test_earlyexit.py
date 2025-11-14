@@ -531,6 +531,134 @@ test_one.py::test_func3 PASSED
         assert "ERROR Connection timeout" in stdout
 
 
+class TestArgumentParsing:
+    """Test argument parsing edge cases"""
+    
+    def test_double_dash_separator_with_command_flags(self):
+        """Test that -- separator allows commands with flags like --id"""
+        import tempfile
+        import os
+        
+        # Create a fake command script that has flags
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as f:
+            f.write('#!/bin/bash\n')
+            f.write('echo "Command called with: $@"\n')
+            f.write('exit 0\n')
+            script = f.name
+        
+        os.chmod(script, 0o755)
+        
+        try:
+            # Test: ee -- command --id value --step 2
+            result = subprocess.run(
+                ['earlyexit', '--', script, '--id', 'rble-3050969270', '--step', '2', '-v'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Should run successfully (exit code 1 = no pattern match in watch mode)
+            assert result.returncode in [0, 1], f"Should run successfully, got {result.returncode}"
+            assert "Command called with:" in result.stdout, "Command should have been executed"
+            assert "--id" in result.stdout, "Command should receive --id flag"
+            assert "rble-3050969270" in result.stdout, "Command should receive --id value"
+            # Most importantly: should NOT say "invalid float value" 
+            # (that would mean --id was parsed as --idle-timeout)
+            assert "invalid float value" not in result.stderr
+        finally:
+            os.unlink(script)
+    
+    def test_double_dash_with_pattern(self):
+        """Test that pattern can be specified before -- separator"""
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as f:
+            f.write('#!/bin/bash\n')
+            f.write('echo "SUCCESS"\n')
+            f.write('exit 0\n')
+            script = f.name
+        
+        os.chmod(script, 0o755)
+        
+        try:
+            # Test: ee 'SUCCESS' -- command --flag
+            result = subprocess.run(
+                ['earlyexit', 'SUCCESS', '--', script, '--verbose'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Should match pattern and return 0
+            assert result.returncode == 0, f"Should return 0 (pattern matched), got {result.returncode}"
+            assert "SUCCESS" in result.stdout, "Should see command output"
+        finally:
+            os.unlink(script)
+    
+    def test_parse_known_args_allows_command_flags(self):
+        """Test that parse_known_args allows commands with unknown flags"""
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as f:
+            f.write('#!/bin/bash\n')
+            f.write('echo "args: $@"\n')
+            f.write('exit 0\n')
+            script = f.name
+        
+        os.chmod(script, 0o755)
+        
+        try:
+            # Command with flags like --id that aren't earlyexit options
+            # Should work WITHOUT needing -- separator due to parse_known_args
+            result = subprocess.run(
+                ['earlyexit', script, 'test', '--id', '123', '--step', '2'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            # Should succeed
+            assert result.returncode in [0, 1], f"Should run successfully, got {result.returncode}"
+            assert "args:" in result.stdout, "Command should have been executed"
+            assert "--id" in result.stdout, "Command should receive --id flag"
+            
+            # Most importantly: should NOT say "invalid float value" 
+            # (that would mean --id was incorrectly parsed as --idle-timeout)
+            assert "invalid float value" not in result.stderr, \
+                "Should not misinterpret --id as --idle-timeout abbreviation"
+        finally:
+            os.unlink(script)
+    
+    def test_command_mode_with_pattern(self):
+        """Test command mode works with explicit pattern (no flags)"""
+        import tempfile
+        import os
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.sh') as f:
+            f.write('#!/bin/bash\n')
+            f.write('echo "test output"\n')
+            f.write('exit 0\n')
+            script = f.name
+        
+        os.chmod(script, 0o755)
+        
+        try:
+            # Pattern with regex chars (not detected as command name)
+            result = subprocess.run(
+                ['earlyexit', 'output|test', script],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            assert result.returncode == 0, "Command mode with pattern should work"
+            assert "test output" in result.stdout
+        finally:
+            os.unlink(script)
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
 

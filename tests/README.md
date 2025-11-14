@@ -1,148 +1,228 @@
-# Earlyexit Tests
+# Test Suite
 
-This directory contains test scripts for the `earlyexit` project.
+This directory contains regression tests that validate all claimed features in the README.
 
-## Test Files
+## Test Index
 
-### Python Tests
+### 🧪 Automated Test Scripts
 
-- **`test_earlyexit.py`** - Unit tests for core earlyexit functionality
-  - Run with: `pytest test_earlyexit.py`
+| Test File | Feature Tested | What It Proves | Run Command |
+|-----------|----------------|----------------|-------------|
+| [`test_pipe_timeouts.sh`](./test_pipe_timeouts.sh) | Idle & Startup Detection (Pipe Mode) | `--idle-timeout` and `--first-output-timeout` work in pipe mode, upstream gets SIGPIPE on exit | `./tests/test_pipe_timeouts.sh` |
+| [`test_delay_exit.sh`](./test_delay_exit.sh) | Error Context Capture | `--delay-exit` captures full error context after match | `./tests/test_delay_exit.sh` |
+| [`test_timeouts.sh`](./test_timeouts.sh) | Timeout Management | `-t`, `--idle-timeout`, `--first-output-timeout` all work correctly | `./tests/test_timeouts.sh` |
+| [`test_fd.sh`](./test_fd.sh) | Custom File Descriptors | `--fd 3 --fd 4` monitors custom file descriptors | `./tests/test_fd.sh` |
+| [`test_multifd.sh`](./test_multifd.sh) | Monitor stderr | Separate monitoring of stdout and stderr with `--stdout`, `--stderr` | `./tests/test_multifd.sh` |
 
-- **`test_subprocess_telemetry.py`** - Tests telemetry from subprocess invocations
-  - Verifies SQLite logging works correctly when earlyexit is spawned as subprocess
-  - Tests single, concurrent, and timeout scenarios
-  - Run with: `python3 test_subprocess_telemetry.py`
+### 📚 Documentation Proofs
 
-- **`test_delay_exit_features.py`** - Comprehensive tests for delay-exit and delay-exit-after-lines
-  - Tests both stdout/stderr monitoring (default behavior)
-  - Tests stdout-only and stderr-only monitoring
-  - Verifies delay-exit time limit
-  - Verifies delay-exit-after-lines limit (whichever comes first)
-  - Tests pipe mode (stdin)
-  - Run with: `python3 test_delay_exit_features.py`
+| Feature | Documentation | What It Explains |
+|---------|---------------|------------------|
+| ML Validation | [`docs/PIPE_MODE_TIMEOUTS.md`](../docs/PIPE_MODE_TIMEOUTS.md) | How TP/TN/FP/FN tracking works |
+| Smart Suggestions | [`docs/PIPE_MODE_TIMEOUTS.md`](../docs/PIPE_MODE_TIMEOUTS.md) | How learning system provides suggestions |
+| Learning System | [`docs/PIPE_MODE_TIMEOUTS.md`](../docs/PIPE_MODE_TIMEOUTS.md) | Interactive learning from Ctrl+C |
+| Unbuffered Output | [`demo_stdbuf_position.sh`](../demo_stdbuf_position.sh) | Proof that `stdbuf` position matters |
 
-### Shell Scripts
+## Test Details
 
-#### Feature Tests
+### test_pipe_timeouts.sh
 
-- **`test_fd.sh`** - Tests file descriptor monitoring
-  - Verifies stdout/stderr/custom FD monitoring
-  - Tests per-FD pattern matching
-  
-- **`test_multifd.sh`** - Tests multiple file descriptor monitoring
-  - Concurrent monitoring of multiple streams
-  - Per-FD prefix display
+**Tests:**
+1. ✅ First output timeout - Detects when upstream produces no output
+2. ✅ First output success - No timeout when output arrives in time
+3. ✅ Idle timeout - Detects when upstream stalls
+4. ✅ Continuous output - No idle timeout when output is regular
+5. ✅ Pattern match - Normal pattern matching works with timeouts
 
-- **`test_timeouts.sh`** - Tests timeout functionality
-  - Overall timeout (`-t`)
-  - Idle timeout (`--idle-timeout`)
-  - First output timeout (`--first-output-timeout`)
+**Exit Codes Verified:**
+- Exit code 2 for timeouts
+- Exit code 0 for pattern match
+- Exit code 1 for no match
 
-- **`test_delay_exit.sh`** - Tests delay-exit feature
-  - Verifies delayed termination after pattern match
-  - Tests error context capture
+**Proves README Claims:**
+- ✅ Idle detection works in pipe mode
+- ✅ Startup detection works in pipe mode  
+- ✅ Upstream process receives SIGPIPE and terminates
 
-## Running Tests
+### test_delay_exit.sh
 
-### Run All Python Tests
+**Tests:**
+- Immediate exit without `--delay-exit`
+- Delayed exit with `--delay-exit 5`
+- Line count-based early exit with `--delay-exit-after-lines`
+- Combined time and line limits
+
+**Proves README Claims:**
+- ✅ Error context capture works (command mode)
+- ✅ Configurable delay after pattern match
+- ✅ Smart exit on time OR line count
+
+### test_pipe_delay_exit.sh
+
+**Tests:**
+- Delay-exit captures context after error in pipe mode
+- Time-based context capture with streaming input
+- delay-exit=0 exits immediately (backward compatible)
+- Default behavior (no delay-exit) exits immediately on match
+- Line count-based early exit with `--delay-exit-after-lines`
+
+**Proves README Claims:**
+- ✅ `--delay-exit` works in pipe mode
+- ✅ Error context capture in pipes
+- ✅ Smart exit on time OR line count in pipe mode
+- ✅ Backward compatible default behavior
+
+### test_watch_fd_detection.sh
+
+**Tests:**
+- Watch mode detects custom file descriptors (with psutil)
+- Watch mode shows FD paths in verbose mode
+- Watch mode tracks startup timing (first output time)
+- Watch mode displays helpful startup messages
+
+**Proves README Claims:**
+- ✅ Watch mode detects and logs custom FDs
+- ✅ Watch mode tracks startup detection
+- ✅ FD detection integrated with ML/learning system
+- ✅ Non-intrusive detection (doesn't slow down output)
+
+### test_timeouts.sh
+
+**Tests:**
+- Overall timeout with `-t`
+- Idle timeout with `--idle-timeout`
+- First output timeout with `--first-output-timeout`
+- Combined timeout scenarios
+
+**Proves README Claims:**
+- ✅ Multiple timeout types work
+- ✅ Timeouts are independent
+- ✅ Correct exit codes (2) for all timeout types
+
+### test_fd.sh
+
+**Tests:**
+- Monitoring file descriptor 3
+- Monitoring multiple FDs (3, 4, 5)
+- Different patterns per FD with `--fd-pattern`
+- FD prefix labeling with `--fd-prefix`
+
+**Proves README Claims:**
+- ✅ Custom FD monitoring works
+- ✅ Per-FD pattern matching
+- ✅ FD prefix labeling
+
+### test_multifd.sh
+
+**Tests:**
+- Stdout-only monitoring with `--stdout`
+- Stderr-only monitoring with `--stderr`
+- Both streams by default
+- FD prefix labeling
+
+**Proves README Claims:**
+- ✅ Separate stderr monitoring (command mode)
+- ✅ Default monitors both streams
+- ✅ Can select specific streams
+
+## Running All Tests
+
+### For Contributors
+
+**Run everything with pytest (recommended):**
+
 ```bash
-cd tests
-pytest test_earlyexit.py -v
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run all tests (Python + shell scripts)
+pytest tests/
+
+# Run only shell script tests
+pytest tests/test_shell_scripts.py -v
+
+# Run only Python unit tests
+pytest tests/ --ignore=tests/test_shell_scripts.py
+
+# Run with output visible
+pytest tests/ -s
 ```
 
-### Run Specific Shell Test
+### Manual Testing
+
+**Run individual shell tests:**
+
 ```bash
-cd tests
-bash test_fd.sh
-bash test_timeouts.sh
-bash test_multifd.sh
-bash test_delay_exit.sh
+./tests/test_pipe_timeouts.sh
+./tests/test_delay_exit.sh
+./tests/test_timeouts.sh
+./tests/test_fd.sh
+./tests/test_multifd.sh
 ```
 
-### Run All Shell Tests
+**Run all shell tests:**
+
 ```bash
-cd tests
-for test in test_*.sh; do
+for test in tests/test_*.sh; do
     echo "Running $test..."
-    bash "$test"
-    echo ""
+    "$test" || echo "FAILED: $test"
 done
 ```
 
-## Test Coverage
+### Quick Validation
 
-### Core Functionality
-- ✅ Pattern matching (Python regex, Perl regex)
-- ✅ Pipe mode
-- ✅ Command mode
-- ✅ Line number display
-- ✅ Color output
+```bash
+# Quick check before committing
+pytest tests/test_shell_scripts.py -v
 
-### Advanced Features
-- ✅ File descriptor monitoring
-- ✅ Multiple stream monitoring (both stdout/stderr by default)
-- ✅ Per-FD pattern matching
-- ✅ Overall timeout
-- ✅ Idle timeout
-- ✅ First output timeout
-- ✅ Delay-exit feature (time-based)
-- ✅ Delay-exit-after-lines feature (line count-based, whichever comes first)
-
-### Telemetry & ML
-- ✅ Telemetry capture
-- ✅ Match event recording
-- ✅ SQLite concurrency
-- ✅ Subprocess telemetry (verified 100% reliable)
+# Full test suite
+pytest tests/ -v
+```
 
 ## Adding New Tests
 
-### Python Tests
-Add test functions to `test_earlyexit.py`:
-```python
-def test_new_feature():
-    """Test description"""
-    # Your test code
-    assert True
-```
+When adding a new feature:
 
-### Shell Tests
-Create a new `test_feature.sh`:
-```bash
-#!/bin/bash
-# Test new feature
+1. **Create a test script** in `tests/test_<feature>.sh`
+2. **Make it executable**: `chmod +x tests/test_<feature>.sh`
+3. **Follow the pattern**:
+   - Test all claimed behaviors
+   - Verify exit codes
+   - Test edge cases
+   - Print clear success/failure messages
+4. **Update this README** with test details
+5. **Link from main README** in the feature comparison table
 
-echo "Testing new feature..."
-earlyexit "pattern" -- command
-# Verify results
-echo "✅ Test passed"
-```
+## Test Conventions
 
-Make it executable:
-```bash
-chmod +x test_feature.sh
-```
+- ✅ Use clear test names: `Test 1: <what it tests>`
+- ✅ Print expected behavior before running
+- ✅ Verify exit codes explicitly
+- ✅ Use color for pass/fail (green ✅ / red ❌)
+- ✅ Clean up temporary files
+- ✅ Exit code 0 = all tests passed
+- ✅ Print summary at the end
 
-## CI/CD Integration
+## CI Integration
 
-These tests can be integrated into CI/CD pipelines:
+These tests can be run in CI:
 
 ```yaml
-# Example GitHub Actions
-- name: Run Python tests
+# .github/workflows/test.yml
+- name: Run functional tests
   run: |
-    cd tests
-    pytest test_earlyexit.py -v
-
-- name: Run Shell tests  
-  run: |
-    cd tests
-    for test in test_*.sh; do bash "$test"; done
+    for test in tests/test_*.sh; do
+      "$test" || exit 1
+    done
 ```
 
-## Notes
+## Maintenance
 
-- Shell tests use the installed `earlyexit` command
-- Ensure `earlyexit` is installed before running tests: `pip install -e .`
-- Some tests may require specific system tools (timeout, etc.)
+- **After each release**: Run all tests to verify no regressions
+- **Before each README update**: Ensure claims have corresponding tests
+- **If a test fails**: Either fix the bug or update the docs/README
+- **Keep tests simple**: Easy to understand = easy to maintain
 
+---
+
+**These tests prove our README claims are accurate!** 🎯

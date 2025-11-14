@@ -770,6 +770,134 @@ class TelemetryCollector:
                 "learned_settings": learned_count
             }
     
+    def get_db_size_mb(self) -> float:
+        """Get database size in MB"""
+        if not self.enabled or not self.db_path or not os.path.exists(self.db_path):
+            return 0.0
+        return os.path.getsize(self.db_path) / (1024 * 1024)
+    
+    def get_execution_count(self) -> int:
+        """Get total number of executions"""
+        if not self.enabled or not self.db_path:
+            return 0
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM executions")
+            return cursor.fetchone()[0]
+    
+    def cleanup_old_data(self, days: int = 30, max_size_mb: float = 100):
+        """
+        Clean up old telemetry data
+        
+        Args:
+            days: Delete executions older than N days (default: 30)
+            max_size_mb: If DB exceeds this size, delete oldest 50% (default: 100)
+        """
+        if not self.enabled or not self.db_path:
+            return
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Check database size
+            db_size_mb = self.get_db_size_mb()
+            
+            if db_size_mb > max_size_mb:
+                # Delete oldest 50% of executions
+                cursor.execute("""
+                    DELETE FROM executions 
+                    WHERE execution_id IN (
+                        SELECT execution_id FROM executions 
+                        ORDER BY timestamp 
+                        LIMIT (SELECT COUNT(*) / 2 FROM executions)
+                    )
+                """)
+                
+                # Clean up orphaned match_events
+                cursor.execute("""
+                    DELETE FROM match_events 
+                    WHERE execution_id NOT IN (SELECT execution_id FROM executions)
+                """)
+                
+                conn.commit()
+                
+                # Reclaim space
+                cursor.execute("VACUUM")
+            else:
+                # Delete old executions (keep learned_settings)
+                cutoff = time.time() - (days * 86400)
+                cursor.execute("DELETE FROM executions WHERE timestamp < ?", (cutoff,))
+                
+                # Clean up orphaned match_events
+                cursor.execute("""
+                    DELETE FROM match_events 
+                    WHERE execution_id NOT IN (SELECT execution_id FROM executions)
+                """)
+                
+                conn.commit()
+    
+    def auto_cleanup(self):
+        """
+        Run periodic cleanup (every 100 executions)
+        Keeps database under 100 MB and deletes data older than 30 days
+        """
+        if not self.enabled:
+            return
+        
+        # Check if cleanup needed (every 100 executions)
+        count = self.get_execution_count()
+        if count % 100 != 0:
+            return
+        
+        # Run cleanup silently
+        try:
+            self.cleanup_old_data(days=30, max_size_mb=100)
+        except Exception:
+            # Silently ignore cleanup errors
+            pass
+    
+    def clear_all_data(self):
+        """Delete all telemetry data (including learned settings)"""
+        if not self.enabled or not self.db_path:
+            return
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM executions")
+            cursor.execute("DELETE FROM match_events")
+            cursor.execute("DELETE FROM learned_settings")
+            conn.commit()
+            cursor.execute("VACUUM")
+    
+    def clear_executions_only(self):
+        """Delete execution history but keep learned settings"""
+        if not self.enabled or not self.db_path:
+            return
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM executions")
+            cursor.execute("DELETE FROM match_events")
+            conn.commit()
+            cursor.execute("VACUUM")
+    
+    def clear_older_than(self, days: int):
+        """Delete executions older than N days"""
+        if not self.enabled or not self.db_path:
+            return
+        
+        cutoff = time.time() - (days * 86400)
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM executions WHERE timestamp < ?", (cutoff,))
+            cursor.execute("""
+                DELETE FROM match_events 
+                WHERE execution_id NOT IN (SELECT execution_id FROM executions)
+            """)
+            conn.commit()
+            cursor.execute("VACUUM")
+    
     def close(self):
         """Close database connection"""
         if self.conn:

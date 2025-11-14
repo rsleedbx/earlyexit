@@ -47,6 +47,172 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Timeout exceeded")
 
 
+def map_exit_code(code: int, use_unix_convention: bool) -> int:
+    """
+    Map exit codes based on convention.
+    
+    Args:
+        code: Original exit code (grep convention)
+        use_unix_convention: If True, use Unix convention (0=success)
+                           If False, use grep convention (0=match)
+    
+    Returns:
+        Mapped exit code
+    
+    Exit code mappings:
+        Grep convention (default):     Unix convention (--unix-exit-codes):
+        0 = pattern matched            0 = success (no error found)
+        1 = no match                   1 = error found (pattern matched)
+        2 = timeout                    2 = timeout (unchanged)
+        3 = CLI error                  3 = CLI error (unchanged)
+        4 = detached                   4 = detached (unchanged)
+        130 = interrupted              130 = interrupted (unchanged)
+    """
+    if not use_unix_convention:
+        return code  # Keep grep convention (current behavior)
+    
+    # Unix convention: swap 0 and 1 only
+    if code == 0:
+        # Pattern matched (error found) → Unix failure
+        return 1
+    elif code == 1:
+        # No match (success) → Unix success
+        return 0
+    else:
+        # Keep other codes as-is (timeouts, errors, detached, interrupted)
+        return code
+
+
+def create_json_output(
+    exit_code: int,
+    exit_reason: str,
+    pattern: Optional[str],
+    matched_line: Optional[str],
+    line_number: Optional[int],
+    duration: float,
+    command: List[str],
+    timeouts: dict,
+    statistics: dict,
+    log_files: dict
+) -> str:
+    """
+    Create JSON output for --json flag.
+    
+    Args:
+        exit_code: Final exit code (after mapping if --unix-exit-codes used)
+        exit_reason: Reason for exit (pattern_matched, no_match, timeout, etc.)
+        pattern: Regular expression pattern used
+        matched_line: The line that matched (if any)
+        line_number: Line number of match (if any)
+        duration: Total execution duration in seconds
+        command: Command that was executed
+        timeouts: Dictionary of timeout settings
+        statistics: Dictionary of execution statistics
+        log_files: Dictionary of log file paths
+    
+    Returns:
+        JSON string
+    """
+    import json
+    
+    output = {
+        "version": "0.0.5",
+        "exit_code": exit_code,
+        "exit_reason": exit_reason,
+        "pattern": pattern,
+        "matched_line": matched_line,
+        "line_number": line_number,
+        "duration_seconds": round(duration, 2),
+        "command": command,
+        "timeouts": timeouts,
+        "statistics": statistics,
+        "log_files": log_files
+    }
+    
+    return json.dumps(output, indent=2)
+
+
+def format_duration(seconds: float) -> str:
+    """
+    Format seconds as HH:MM:SS or MM:SS.
+    
+    Args:
+        seconds: Duration in seconds
+    
+    Returns:
+        Formatted string (HH:MM:SS or MM:SS)
+    """
+    if seconds < 0:
+        return "00:00"
+    
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    else:
+        return f"{minutes:02d}:{secs:02d}"
+
+
+def show_progress_indicator(args, start_time: float, last_output_time: list, 
+                            lines_processed: list, match_count: list, 
+                            stop_event: threading.Event):
+    """
+    Display progress indicator on stderr.
+    
+    Args:
+        args: Arguments namespace
+        start_time: When monitoring started (timestamp)
+        last_output_time: List with [last_output_timestamp]
+        lines_processed: List with [line_count]
+        match_count: List with [match_count]
+        stop_event: Threading event to signal stop
+    """
+    while not stop_event.is_set():
+        elapsed = time.time() - start_time
+        elapsed_str = format_duration(elapsed)
+        
+        # Build timeout display
+        if args.timeout:
+            remaining = args.timeout - elapsed
+            if remaining < 0:
+                remaining = 0
+            timeout_str = f"{elapsed_str} / {format_duration(args.timeout)}"
+        else:
+            timeout_str = elapsed_str
+        
+        # Time since last output
+        if last_output_time[0] and last_output_time[0] > 0:
+            since_output = time.time() - last_output_time[0]
+            last_output_str = format_duration(since_output) + " ago"
+        else:
+            last_output_str = "waiting..."
+        
+        # Command name
+        command_name = args.command[0] if args.command else "stdin"
+        
+        # Build progress line
+        progress = (
+            f"\r[{timeout_str}] Monitoring {command_name}... "
+            f"Last output: {last_output_str} | "
+            f"Lines: {lines_processed[0]:,} | "
+            f"Matches: {match_count[0]}"
+        )
+        
+        # Clear line and print (overwrite previous progress)
+        sys.stderr.write('\r' + ' ' * 120)  # Clear line
+        sys.stderr.write(progress)
+        sys.stderr.flush()
+        
+        # Update every 2 seconds
+        stop_event.wait(2)
+    
+    # Clear progress line when done
+    sys.stderr.write('\r' + ' ' * 120 + '\r')
+    sys.stderr.flush()
+
+
 def inspect_process_fds(pid: int, delay: float = 0.1) -> List[str]:
     """
     Inspect a process's open file descriptors to find regular files
@@ -111,7 +277,8 @@ def inspect_process_fds(pid: int, delay: float = 0.1) -> List[str]:
         return []
 
 
-def compile_pattern(pattern: str, flags: int = 0, perl_style: bool = False) -> Pattern:
+def compile_pattern(pattern: str, flags: int = 0, perl_style: bool = False, 
+                   word_regexp: bool = False, line_regexp: bool = False) -> Pattern:
     """
     Compile regex pattern with appropriate flags
     
@@ -119,10 +286,18 @@ def compile_pattern(pattern: str, flags: int = 0, perl_style: bool = False) -> P
         pattern: Regex pattern string
         flags: re module flags
         perl_style: Use regex module for Perl-compatible patterns
+        word_regexp: Match whole words only (like grep -w)
+        line_regexp: Match whole lines only (like grep -x)
         
     Returns:
         Compiled pattern object
     """
+    # Apply word/line boundaries (like grep -w/-x)
+    if word_regexp:
+        pattern = r'\b' + pattern + r'\b'
+    if line_regexp:
+        pattern = r'^' + pattern + r'$'
+    
     if perl_style:
         try:
             import regex
@@ -143,7 +318,7 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                    match_timestamp: Optional[list] = None, telemetry_collector=None, 
                    execution_id: Optional[str] = None, start_time: Optional[float] = None,
                    source_file_container: Optional[list] = None, post_match_lines: Optional[list] = None,
-                   log_file=None):
+                   log_file=None, lines_processed: Optional[list] = None):
     """
     Process a stream (stdout or stderr) line by line
     
@@ -201,9 +376,9 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     
     line_number = line_number_offset
     
-    # Context buffer for capturing lines before/after matches
+    # Context buffer for capturing lines before matches (like grep -B)
     context_buffer = []
-    context_size = 3  # Capture 3 lines before and after
+    context_size = getattr(args, 'before_context', 0)  # Number of lines to keep
     
     # Try to get filename from stream handle itself
     if source_file_container and not source_file_container[0]:
@@ -235,10 +410,15 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
             line_number += 1
             line_stripped = line.rstrip('\n')
             
-            # Maintain context buffer (ring buffer of last N lines)
-            context_buffer.append(line_stripped)
-            if len(context_buffer) > context_size:
-                context_buffer.pop(0)
+            # Track lines for progress indicator
+            if lines_processed is not None:
+                lines_processed[0] += 1
+            
+            # Maintain context buffer (ring buffer of last N lines) for -B/--before-context
+            if context_size > 0:
+                context_buffer.append((line_number, line_stripped))
+                if len(context_buffer) > context_size:
+                    context_buffer.pop(0)
             
             # Check for match
             match = pattern.search(line_stripped)
@@ -285,6 +465,19 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                 
                 # Output the line if not quiet
                 if not args.quiet:
+                    # Print context lines before the match (like grep -B)
+                    if context_size > 0 and len(context_buffer) > 0:
+                        # Print all buffered lines except the current one (which we'll print below)
+                        for ctx_line_num, ctx_line in context_buffer[:-1]:
+                            ctx_prefix = ""
+                            if args.line_number:
+                                ctx_prefix = f"{ctx_line_num}-"  # Use '-' for context lines like grep
+                            if stream_name and args.fd_prefix:
+                                ctx_prefix += f"{YELLOW}[{stream_name}]{RESET} "
+                            print(f"{ctx_prefix}{ctx_line}", flush=True)
+                        # Clear buffer after printing to avoid reprinting on next match
+                        context_buffer.clear()
+                    
                     prefix = ""
                     if args.line_number:
                         prefix = f"{line_number}:"
@@ -357,6 +550,42 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     return line_number - line_number_offset
 
 
+def write_pid_file(pid: int, pid_file_path: str, quiet: bool = False):
+    """Write PID to file for cleanup scripts"""
+    try:
+        with open(pid_file_path, 'w') as f:
+            f.write(str(pid))
+        if not quiet:
+            print(f"   PID file: {pid_file_path}", file=sys.stderr)
+    except Exception as e:
+        if not quiet:
+            print(f"⚠️  Warning: Could not write PID file: {e}", file=sys.stderr)
+
+
+def get_process_group_id(pid: int) -> Optional[int]:
+    """Get process group ID for a PID"""
+    try:
+        import os
+        return os.getpgid(pid)
+    except:
+        return None
+
+
+def kill_process_group(pgid: int):
+    """Kill entire process group"""
+    try:
+        import os
+        import signal
+        os.killpg(pgid, signal.SIGTERM)
+        time.sleep(1)
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except:
+            pass
+    except:
+        pass
+
+
 def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_collector=None, 
                      execution_id: Optional[str] = None, telemetry_start_time: Optional[float] = None,
                      initial_source_file: Optional[str] = None):
@@ -389,8 +618,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             stdout_log_file = open(stdout_log_path, file_mode)
             stderr_log_file = open(stderr_log_path, file_mode)
             
-            # Display "Logging to:" message unless quiet
-            if not args.quiet:
+            # Display "Logging to:" message unless quiet or JSON mode
+            if not args.quiet and not args.json:
                 mode_msg = " (appending)" if file_mode == 'a' else ""
                 print(f"📝 Logging to{mode_msg}:")
                 print(f"   stdout: {stdout_log_path}")
@@ -405,6 +634,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     post_match_lines = [0]  # Track lines captured after match
     timed_out = [False]  # Track if we timed out
     timeout_reason = [""]  # Track why we timed out
+    detached_pid = [None]  # Track PID if we detach from subprocess
     
     # Track output timing
     start_time = telemetry_start_time or time.time()
@@ -417,6 +647,16 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     # Source file container (mutable, can be updated from output)
     source_file_container = [initial_source_file]
     
+    # Statistics for JSON output
+    statistics = {
+        'lines_processed': [0],  # Total lines
+        'bytes_processed': [0],  # Total bytes
+        'time_to_first_output': [None],  # Time to first line
+        'time_to_match': [None],  # Time to first match
+        'matched_line': [None],  # The line that matched
+        'matched_line_number': [None],  # Line number of match
+    }
+    
     # Track pipes and file descriptors for cleanup
     pipes_to_close = []
     
@@ -428,7 +668,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
         flags = re.IGNORECASE if args.ignore_case else 0
         for fd_num, pattern_str in args.fd_patterns:
             try:
-                fd_patterns[fd_num] = compile_pattern(pattern_str, flags, args.perl_regexp)
+                fd_patterns[fd_num] = compile_pattern(pattern_str, flags, args.perl_regexp, 
+                                                      args.word_regexp, args.line_regexp)
             except Exception as e:
                 print(f"❌ Invalid regex pattern for fd {fd_num}: {e}", file=sys.stderr)
                 return 3
@@ -438,18 +679,39 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
         timed_out[0] = True
         timeout_reason[0] = reason
         if process.poll() is None:  # Process still running
-            try:
-                process.terminate()
+            # Check if detach-on-timeout is enabled
+            if args.detach and args.detach_on_timeout:
+                # Detach instead of killing
+                detached_pid[0] = process.pid
+                if not args.quiet:
+                    if args.detach_group:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"\n⏱️  Timeout - Detached from process group (PGID: {pgid}, PID: {process.pid})", file=sys.stderr)
+                    else:
+                        print(f"\n⏱️  Timeout - Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                    print(f"   Subprocess continues running in background", file=sys.stderr)
+                    if args.detach_group:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"   Use 'kill -- -{pgid}' to stop process group", file=sys.stderr)
+                    else:
+                        print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                # Write PID file if requested
+                if args.pid_file:
+                    write_pid_file(process.pid, args.pid_file, args.quiet)
+            else:
+                # Normal timeout: kill subprocess
                 try:
-                    process.wait(timeout=1)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-            except (PermissionError, OSError):
-                # In sandbox or restricted environment, try kill directly
-                try:
-                    process.kill()
-                except:
-                    pass  # Process may have already exited
+                    process.terminate()
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                except (PermissionError, OSError):
+                    # In sandbox or restricted environment, try kill directly
+                    try:
+                        process.kill()
+                    except:
+                        pass  # Process may have already exited
     
     def check_output_timeouts():
         """Monitor thread to check for idle and first-output timeouts"""
@@ -633,7 +895,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                          last_output_time, first_output_seen, first_time,
                                          match_timestamp,
                                          telemetry_collector, execution_id, start_time, source_file_container,
-                                         post_match_lines, log_f)
+                                         post_match_lines, log_f, statistics['lines_processed'])
                         except:
                             pass
                     return monitor
@@ -680,6 +942,19 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 t.start()
                 threads.append(t)
             
+            # Start progress indicator if requested
+            progress_stop_event = None
+            progress_thread = None
+            if args.progress and not args.quiet and not args.json:
+                progress_stop_event = threading.Event()
+                progress_thread = threading.Thread(
+                    target=show_progress_indicator,
+                    args=(args, start_time, last_output_time, statistics['lines_processed'],
+                          match_count, progress_stop_event),
+                    daemon=True
+                )
+                progress_thread.start()
+            
             # Wait for threads to complete or match to be found
             while any(t.is_alive() for t in threads):
                 if match_count[0] >= args.max_count:
@@ -696,25 +971,89 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                         should_exit = True
                     
                     if should_exit:
-                        # Kill the process on match (after delay)
+                        # Cancel timeout timer
                         if timeout_timer:
                             timeout_timer.cancel()
-                        try:
-                            process.terminate()
-                        except (PermissionError, OSError):
-                            pass
-                        try:
-                            process.wait(timeout=1)
-                        except subprocess.TimeoutExpired:
-                            try:
-                                process.kill()
-                            except (PermissionError, OSError):
-                                pass
-                        break
+                        
+                        # Check if detach mode is enabled
+                        if args.detach:
+                            # Detach mode: Don't kill subprocess
+                            detached_pid[0] = process.pid
+                            if not args.quiet:
+                                if args.detach_group:
+                                    pgid = get_process_group_id(process.pid)
+                                    print(f"\n🔓 Detached from process group (PGID: {pgid}, PID: {process.pid})", file=sys.stderr)
+                                else:
+                                    print(f"\n🔓 Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                                print(f"   Subprocess continues running in background", file=sys.stderr)
+                                if args.detach_group:
+                                    pgid = get_process_group_id(process.pid)
+                                    print(f"   Use 'kill -- -{pgid}' to stop process group", file=sys.stderr)
+                                else:
+                                    print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                            # Write PID file if requested
+                            if args.pid_file:
+                                write_pid_file(process.pid, args.pid_file, args.quiet)
+                            # Don't terminate or kill - just break out of loop
+                            break
+                        else:
+                            # Normal mode: Kill subprocess
+                            if args.detach_group:
+                                # Kill process group
+                                pgid = get_process_group_id(process.pid)
+                                if pgid:
+                                    kill_process_group(pgid)
+                                else:
+                                    # Fallback to single process
+                                    try:
+                                        process.terminate()
+                                    except (PermissionError, OSError):
+                                        pass
+                                    try:
+                                        process.wait(timeout=1)
+                                    except subprocess.TimeoutExpired:
+                                        try:
+                                            process.kill()
+                                        except (PermissionError, OSError):
+                                            pass
+                            else:
+                                try:
+                                    process.terminate()
+                                except (PermissionError, OSError):
+                                    pass
+                                try:
+                                    process.wait(timeout=1)
+                                except subprocess.TimeoutExpired:
+                                    try:
+                                        process.kill()
+                                    except (PermissionError, OSError):
+                                        pass
+                            break
                 if timed_out[0]:
                     break
                 # Wait a bit (check frequently for delay expiration)
                 time.sleep(0.1)
+            
+            # After threads complete, check one more time if we found a match and should detach
+            # (Threads might have completed before we entered the while loop above)
+            if match_count[0] >= args.max_count and args.detach and not detached_pid[0]:
+                # Pattern matched and detach mode is enabled
+                detached_pid[0] = process.pid
+                if not args.quiet:
+                    if args.detach_group:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"\n🔓 Detached from process group (PGID: {pgid}, PID: {process.pid})", file=sys.stderr)
+                    else:
+                        print(f"\n🔓 Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                    print(f"   Subprocess continues running in background", file=sys.stderr)
+                    if args.detach_group:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"   Use 'kill -- -{pgid}' to stop process group", file=sys.stderr)
+                    else:
+                        print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                # Write PID file if requested
+                if args.pid_file:
+                    write_pid_file(process.pid, args.pid_file, args.quiet)
         
         elif streams_to_monitor:
             # Single stream - use thread to allow delay monitoring
@@ -730,12 +1069,25 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                  last_output_time, first_output_seen, first_time_for_stream,
                                  match_timestamp,
                                  telemetry_collector, execution_id, start_time, source_file_container,
-                                 post_match_lines, log_file_for_stream)
+                                 post_match_lines, log_file_for_stream, statistics['lines_processed'])
                 except:
                     pass
             
             monitor_thread = threading.Thread(target=monitor_single, daemon=True)
             monitor_thread.start()
+            
+            # Start progress indicator if requested
+            progress_stop_event = None
+            progress_thread = None
+            if args.progress and not args.quiet and not args.json:
+                progress_stop_event = threading.Event()
+                progress_thread = threading.Thread(
+                    target=show_progress_indicator,
+                    args=(args, start_time, last_output_time, statistics['lines_processed'],
+                          match_count, progress_stop_event),
+                    daemon=True
+                )
+                progress_thread.start()
             
             # Monitor for match and delay expiration
             while monitor_thread.is_alive():
@@ -753,25 +1105,89 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                         should_exit = True
                     
                     if should_exit:
-                        # Kill the process on match (after delay)
+                        # Cancel timeout timer
                         if timeout_timer:
                             timeout_timer.cancel()
-                        try:
-                            process.terminate()
-                        except (PermissionError, OSError):
-                            pass
-                        try:
-                            process.wait(timeout=1)
-                        except subprocess.TimeoutExpired:
-                            try:
-                                process.kill()
-                            except (PermissionError, OSError):
-                                pass
-                        break
+                        
+                        # Check if detach mode is enabled
+                        if args.detach:
+                            # Detach mode: Don't kill subprocess
+                            detached_pid[0] = process.pid
+                            if not args.quiet:
+                                if args.detach_group:
+                                    pgid = get_process_group_id(process.pid)
+                                    print(f"\n🔓 Detached from process group (PGID: {pgid}, PID: {process.pid})", file=sys.stderr)
+                                else:
+                                    print(f"\n🔓 Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                                print(f"   Subprocess continues running in background", file=sys.stderr)
+                                if args.detach_group:
+                                    pgid = get_process_group_id(process.pid)
+                                    print(f"   Use 'kill -- -{pgid}' to stop process group", file=sys.stderr)
+                                else:
+                                    print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                            # Write PID file if requested
+                            if args.pid_file:
+                                write_pid_file(process.pid, args.pid_file, args.quiet)
+                            # Don't terminate or kill - just break out of loop
+                            break
+                        else:
+                            # Normal mode: Kill subprocess
+                            if args.detach_group:
+                                # Kill process group
+                                pgid = get_process_group_id(process.pid)
+                                if pgid:
+                                    kill_process_group(pgid)
+                                else:
+                                    # Fallback to single process
+                                    try:
+                                        process.terminate()
+                                    except (PermissionError, OSError):
+                                        pass
+                                    try:
+                                        process.wait(timeout=1)
+                                    except subprocess.TimeoutExpired:
+                                        try:
+                                            process.kill()
+                                        except (PermissionError, OSError):
+                                            pass
+                            else:
+                                try:
+                                    process.terminate()
+                                except (PermissionError, OSError):
+                                    pass
+                                try:
+                                    process.wait(timeout=1)
+                                except subprocess.TimeoutExpired:
+                                    try:
+                                        process.kill()
+                                    except (PermissionError, OSError):
+                                        pass
+                            break
                 if timed_out[0]:
                     break
                 # Wait a bit (check frequently for delay expiration)
                 time.sleep(0.1)
+            
+            # After thread completes, check one more time if we found a match and should detach
+            # (Thread might have completed before we entered the while loop above)
+            if match_count[0] >= args.max_count and args.detach and not detached_pid[0]:
+                # Pattern matched and detach mode is enabled
+                detached_pid[0] = process.pid
+                if not args.quiet:
+                    if args.detach_group:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"\n🔓 Detached from process group (PGID: {pgid}, PID: {process.pid})", file=sys.stderr)
+                    else:
+                        print(f"\n🔓 Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                    print(f"   Subprocess continues running in background", file=sys.stderr)
+                    if args.detach_group:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"   Use 'kill -- -{pgid}' to stop process group", file=sys.stderr)
+                    else:
+                        print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                # Write PID file if requested
+                if args.pid_file:
+                    write_pid_file(process.pid, args.pid_file, args.quiet)
             
             # If no match found, drain the other stream
             if match_count[0] < args.max_count:
@@ -788,104 +1204,121 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                     except:
                         pass
         
-        # Old code below - keeping for reference but will be removed
-        if False and args.match_stderr == 'both':
-            # Monitor both streams in parallel
-            stdout_lines = [0]
-            stderr_lines = [0]
-            
-            def monitor_stdout():
-                try:
-                    stdout_lines[0] = process_stream(
-                        process.stdout, pattern, args, 0, match_count, use_color, "stdout",
-                        None, None, first_stdout_time,
-                        None, telemetry_collector, execution_id, start_time, source_file_container,
-                        post_match_lines, stdout_log_file
-                    )
-                except:
-                    pass
-            
-            def monitor_stderr():
-                try:
-                    stderr_lines[0] = process_stream(
-                        process.stderr, pattern, args, 0, match_count, use_color, "stderr",
-                        None, None, first_stderr_time,
-                        None, telemetry_collector, execution_id, start_time, source_file_container,
-                        post_match_lines, stderr_log_file
-                    )
-                except:
-                    pass
-            
-            stdout_thread = threading.Thread(target=monitor_stdout, daemon=True)
-            stderr_thread = threading.Thread(target=monitor_stderr, daemon=True)
-            
-            stdout_thread.start()
-            stderr_thread.start()
-            
-            # Wait for threads to complete or match to be found
-            while stdout_thread.is_alive() or stderr_thread.is_alive():
-                if match_count[0] >= args.max_count:
-                    # Kill the process on match
-                    if timeout_timer:
-                        timeout_timer.cancel()
-                    process.terminate()
+        # Old code below - DISABLED (replaced by threaded monitoring above)
+        if False:
+            # This entire block is disabled - all monitoring now uses the threaded approach above
+            # Kept for reference only, will be removed in future cleanup
+            if args.match_stderr == 'both':
+                # Monitor both streams in parallel
+                stdout_lines = [0]
+                stderr_lines = [0]
+                
+                def monitor_stdout():
                     try:
-                        process.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                    break
-                if timed_out[0]:
-                    break
-                stdout_thread.join(timeout=0.1)
-                if stderr_thread.is_alive():
-                    stderr_thread.join(timeout=0.1)
-            
-        elif args.match_stderr == 'stderr':
-            # Only monitor stderr
-            try:
-                process_stream(process.stderr, pattern, args, 0, match_count, use_color, "stderr",
-                             None, None, first_stderr_time,
-                             None, telemetry_collector, execution_id, start_time, source_file_container,
-                             post_match_lines, stderr_log_file)
-            except:
-                pass
-            # Drain stdout
-            try:
-                for line in process.stdout:
-                    # Write to stdout log if enabled
-                    if stdout_log_file:
-                        stdout_log_file.write(line.decode('utf-8', errors='replace'))
-                        stdout_log_file.flush()
-                    if not args.quiet:
-                        print(line.decode('utf-8', errors='replace'), end='', flush=True)
-            except:
-                pass
-        else:
-            # Only monitor stdout (default)
-            try:
-                process_stream(process.stdout, pattern, args, 0, match_count, use_color, "stdout",
-                             None, None, first_stdout_time,
-                             None, telemetry_collector, execution_id, start_time, source_file_container,
-                             post_match_lines, stdout_log_file)
-            except:
-                pass
-            # Drain stderr
-            try:
-                for line in process.stderr:
-                    # Write to stderr log if enabled
-                    if stderr_log_file:
-                        stderr_log_file.write(line.decode('utf-8', errors='replace'))
-                        stderr_log_file.flush()
-                    if not args.quiet:
-                        print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
-            except:
-                pass
+                        stdout_lines[0] = process_stream(
+                            process.stdout, pattern, args, 0, match_count, use_color, "stdout",
+                            None, None, first_stdout_time,
+                            None, telemetry_collector, execution_id, start_time, source_file_container,
+                            post_match_lines, stdout_log_file, statistics['lines_processed']
+                        )
+                    except:
+                        pass
+                
+                def monitor_stderr():
+                    try:
+                        stderr_lines[0] = process_stream(
+                            process.stderr, pattern, args, 0, match_count, use_color, "stderr",
+                            None, None, first_stderr_time,
+                            None, telemetry_collector, execution_id, start_time, source_file_container,
+                            post_match_lines, stderr_log_file, statistics['lines_processed']
+                        )
+                    except:
+                        pass
+                
+                stdout_thread = threading.Thread(target=monitor_stdout, daemon=True)
+                stderr_thread = threading.Thread(target=monitor_stderr, daemon=True)
+                
+                stdout_thread.start()
+                stderr_thread.start()
+                
+                # Wait for threads to complete or match to be found
+                while stdout_thread.is_alive() or stderr_thread.is_alive():
+                    if match_count[0] >= args.max_count:
+                        # Kill the process on match
+                        if timeout_timer:
+                            timeout_timer.cancel()
+                        process.terminate()
+                        try:
+                            process.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                        break
+                    if timed_out[0]:
+                        break
+                    stdout_thread.join(timeout=0.1)
+                    if stderr_thread.is_alive():
+                        stderr_thread.join(timeout=0.1)
+                
+            elif args.match_stderr == 'stderr':
+                # Only monitor stderr
+                try:
+                    process_stream(process.stderr, pattern, args, 0, match_count, use_color, "stderr",
+                                 None, None, first_stderr_time,
+                                 None, telemetry_collector, execution_id, start_time, source_file_container,
+                                 post_match_lines, stderr_log_file, statistics['lines_processed'])
+                except:
+                    pass
+                # Drain stdout
+                try:
+                    for line in process.stdout:
+                        # Write to stdout log if enabled
+                        if stdout_log_file:
+                            stdout_log_file.write(line.decode('utf-8', errors='replace'))
+                            stdout_log_file.flush()
+                        if not args.quiet:
+                            print(line.decode('utf-8', errors='replace'), end='', flush=True)
+                except:
+                    pass
+            else:
+                # Only monitor stdout (default)
+                try:
+                    process_stream(process.stdout, pattern, args, 0, match_count, use_color, "stdout",
+                                 None, None, first_stdout_time,
+                                 None, telemetry_collector, execution_id, start_time, source_file_container,
+                                 post_match_lines, stdout_log_file)
+                except:
+                    pass
+                # Drain stderr (only if we didn't detach)
+                if not (args.detach and detached_pid[0]):
+                    try:
+                        for line in process.stderr:
+                            # Write to stderr log if enabled
+                            if stderr_log_file:
+                                stderr_log_file.write(line.decode('utf-8', errors='replace'))
+                                stderr_log_file.flush()
+                            if not args.quiet:
+                                print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
+                    except:
+                        pass
         
         # Cancel timeout if still running
         if timeout_timer:
             timeout_timer.cancel()
         
-        # Wait for process to complete
+        # If we detached, don't wait for process - return immediately
+        if args.detach and detached_pid[0]:
+            # Close our end of the pipes so subprocess can continue independently
+            try:
+                process.stdout.close()
+            except:
+                pass
+            try:
+                process.stderr.close()
+            except:
+                pass
+            return 4  # Detached (subprocess still running)
+        
+        # Wait for process to complete (only if we didn't detach)
         try:
             return_code = process.wait(timeout=1)
         except subprocess.TimeoutExpired:
@@ -894,16 +1327,20 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
         
         # Check if we timed out
         if timed_out[0]:
-            if not args.quiet:
-                if timeout_reason[0]:
-                    print(f"\n⏱️  Timeout: {timeout_reason[0]}", file=sys.stderr)
-                else:
-                    print(f"\n⏱️  Timeout exceeded", file=sys.stderr)
-            return 2
+            # Check if we detached on timeout
+            if args.detach and args.detach_on_timeout and detached_pid[0]:
+                return 4  # Detached on timeout (subprocess still running)
+            else:
+                if not args.quiet:
+                    if timeout_reason[0]:
+                        print(f"\n⏱️  Timeout: {timeout_reason[0]}", file=sys.stderr)
+                    else:
+                        print(f"\n⏱️  Timeout exceeded", file=sys.stderr)
+                return 2
         
         # Determine exit code based on match
         if match_count[0] >= args.max_count:
-            return 0  # Pattern matched - early exit
+            return 0  # Pattern matched - subprocess completed normally
         elif match_count[0] > 0:
             return 0  # At least one match found
         else:
@@ -913,16 +1350,44 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
         print(f"❌ Command not found: {args.command[0]}", file=sys.stderr)
         return 3
     except TimeoutError:
-        # Timeout - show clean message without traceback
-        if not args.quiet:
-            print(f"⏱️  Timeout exceeded", file=sys.stderr)
-        return 2
+        # Timeout - check if we should detach
+        if args.detach and args.detach_on_timeout:
+            # Detach mode: don't kill, just exit
+            # Note: process is still running at this point
+            if not args.quiet:
+                if args.detach_group:
+                    try:
+                        pgid = get_process_group_id(process.pid)
+                        print(f"\n⏱️  Timeout - Detached from process group (PGID: {pgid}, PID: {process.pid})", file=sys.stderr)
+                        print(f"   Use 'kill -- -{pgid}' to stop process group", file=sys.stderr)
+                    except:
+                        print(f"\n⏱️  Timeout - Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                        print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                else:
+                    print(f"\n⏱️  Timeout - Detached from subprocess (PID: {process.pid})", file=sys.stderr)
+                    print(f"   Use 'kill {process.pid}' to stop it later", file=sys.stderr)
+                print(f"   Subprocess continues running in background", file=sys.stderr)
+            # Write PID file if requested
+            if args.pid_file:
+                write_pid_file(process.pid, args.pid_file, args.quiet)
+            return 4  # Detached on timeout (subprocess still running)
+        else:
+            # Normal timeout: show message and return 2
+            if not args.quiet:
+                print(f"⏱️  Timeout exceeded", file=sys.stderr)
+            return 2
     except Exception as e:
         print(f"❌ Error running command: {e}", file=sys.stderr)
         import traceback
         traceback.print_exc()
         return 3
     finally:
+        # Stop progress indicator if it was started
+        if 'progress_stop_event' in locals() and progress_stop_event:
+            progress_stop_event.set()
+        if 'progress_thread' in locals() and progress_thread:
+            progress_thread.join(timeout=1)
+        
         # Clean up log files
         if stdout_log_file:
             try:
@@ -953,8 +1418,18 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
 
 def main():
     """Main entry point"""
+    # Support EARLYEXIT_OPTIONS environment variable (like GREP_OPTIONS)
+    # Insert env options at the beginning so CLI args can override them
+    env_options = os.getenv('EARLYEXIT_OPTIONS', '').strip()
+    if env_options:
+        import shlex
+        env_args = shlex.split(env_options)
+        # Insert after program name but before user args
+        sys.argv[1:1] = env_args
+    
     parser = argparse.ArgumentParser(
         description='Early exit pattern matching - exit immediately when pattern matches',
+        allow_abbrev=False,  # Prevent --id from matching --idle-timeout, etc.
         epilog="""
 Examples:
   # Pipe mode (read from stdin)
@@ -965,6 +1440,10 @@ Examples:
   earlyexit -t 60 'Error' sleep 120
   earlyexit -t 300 'FAILED' pytest -v
   earlyexit -t 600 'error' terraform apply -auto-approve
+  
+  # Use -- separator when command has flags (recommended)
+  earlyexit -- mist validate --id 123 --step 2
+  earlyexit 'ERROR' -- kubectl get pods --all-namespaces
   
   # Monitor both stdout and stderr (default)
   earlyexit 'Error' -- ./app
@@ -983,14 +1462,14 @@ Examples:
   earlyexit --fd-pattern 1 'FAILED' --fd-pattern 2 'ERROR' ./test.sh
   earlyexit --fd 3 --fd-pattern 3 'DEBUG.*Error' --fd-prefix 'Error' ./app
   
-  # Timeout if no output for 30 seconds (hang detection)
-  earlyexit --idle-timeout 30 'Error' ./long-running-app
+  # Timeout if no output for 30 seconds (stall detection)
+  earlyexit -I 30 'Error' ./long-running-app
   
   # Timeout if app doesn't start outputting within 10 seconds
-  earlyexit --first-output-timeout 10 'Error' ./slow-startup-app
+  earlyexit -F 10 'Error' ./slow-startup-app
   
   # Combine timeouts: overall 300s, idle 30s, first output 10s
-  earlyexit -t 300 --idle-timeout 30 --first-output-timeout 10 'Error' ./app
+  earlyexit -t 300 -I 30 -F 10 'Error' ./app
   
   # After error match, wait 10s for error context (default in command mode)
   earlyexit 'Error' ./app
@@ -1007,20 +1486,30 @@ Examples:
   # Invert match - exit when pattern DOESN'T match
   health_check | earlyexit -v 'OK' -t 10
 
-Exit codes:
-  0 - Pattern matched (error detected)
-  1 - No match found (success)
-  2 - Timeout exceeded
-  3 - Other error
+Exit codes (grep convention, default):
+  0 - Pattern matched (error found, subprocess terminated)
+  1 - No match found (success, subprocess completed normally)
+  2 - Timeout exceeded (subprocess terminated, unless --detach-on-timeout)
+  3 - Command not found or other error
+  4 - Detached (subprocess still running, --detach or --detach-on-timeout)
+  130 - Interrupted (Ctrl+C)
+
+Exit codes (Unix convention, --unix-exit-codes):
+  0 - Success (no error pattern found, subprocess completed normally)
+  1 - Failure (error pattern matched, subprocess terminated)
+  2 - Timeout exceeded (unchanged)
+  3 - Command not found or other error (unchanged)
+  4 - Detached (unchanged)
+  130 - Interrupted (Ctrl+C, unchanged)
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # Positional arguments
     parser.add_argument('pattern', nargs='?', default=None,
-                       help='Regular expression pattern to match (optional if -t/--idle-timeout/--first-output-timeout provided)')
+                       help='Regular expression pattern to match (optional if -t/-I/-F provided)')
     parser.add_argument('command', nargs='*',
-                       help='Command to run (if not reading from stdin)')
+                       help='Command to run (if not reading from stdin). Use -- to separate earlyexit flags from command flags.')
     
     # === Arguments in alphabetical order (by long form) ===
     
@@ -1032,12 +1521,40 @@ Exit codes:
                        help='Automatically select optimal parameters based on telemetry (experimental)')
     parser.add_argument('--color', choices=['always', 'auto', 'never'], default='auto',
                        help='Colorize matched text (default: auto)')
-    parser.add_argument('--delay-exit', type=float, metavar='SECONDS', default=None,
-                       help='After match, continue reading for N seconds to capture error context (default: 10 for command mode, 0 for pipe mode)')
+    parser.add_argument('--unix-exit-codes', action='store_true',
+                       help='Use Unix exit code convention: 0=success (no error found), 1=error found (pattern matched). '
+                            'Default uses grep convention: 0=match, 1=no match. Exit codes 2-4 unchanged.')
+    parser.add_argument('--json', action='store_true',
+                       help='Output results as JSON (suppresses normal output). '
+                            'Includes exit code, pattern match details, duration, and statistics. '
+                            'Useful for programmatic parsing and integration.')
+    parser.add_argument('--progress', action='store_true',
+                       help='Show progress indicator with elapsed time, lines processed, and last output time. '
+                            'Updates every 2 seconds on stderr. Automatically disabled with --quiet or --json.')
+    parser.add_argument('-A', '--after-context', '--delay-exit', type=float, metavar='SECONDS', 
+                       dest='delay_exit', default=None,
+                       help='After match, continue reading for N seconds to capture error context (like grep -A but time-based, default: 10 for command mode, 0 for pipe mode)')
+    parser.add_argument('-B', '--before-context', type=int, metavar='NUM', default=0,
+                       help='Print NUM lines of leading context before matching lines (like grep -B)')
+    parser.add_argument('-C', '--context', type=int, metavar='NUM', default=None,
+                       help='Print NUM lines of output context (sets both -B and -A, like grep -C)')
     parser.add_argument('--delay-exit-after-lines', type=int, metavar='LINES', default=100,
                        help='After match, exit early if N lines captured (default: 100). Whichever comes first: time or lines.')
+    parser.add_argument('-D', '--detach', action='store_true',
+                       help='Exit without killing subprocess when pattern matches (command mode only). '
+                            'Subprocess continues running. PID printed to stderr. Exit code: 4')
+    parser.add_argument('--detach-group', action='store_true',
+                       help='Detach entire process group (requires --detach). Useful for commands that spawn child processes.')
+    parser.add_argument('--detach-on-timeout', action='store_true',
+                       help='Detach instead of killing on timeout (requires --detach). Exit code: 4 instead of 2.')
     parser.add_argument('-E', '--extended-regexp', action='store_true',
                        help='Extended regex (default Python re module)')
+    parser.add_argument('--pid-file', metavar='PATH',
+                       help='Write subprocess PID to file (requires --detach). Useful for cleanup scripts.')
+    parser.add_argument('-w', '--word-regexp', action='store_true',
+                       help='Match whole words only (like grep -w, wraps pattern with \\b)')
+    parser.add_argument('-x', '--line-regexp', action='store_true',
+                       help='Match whole lines only (like grep -x, wraps pattern with ^$)')
     parser.add_argument('--fd', dest='monitor_fds', action='append', type=int, metavar='N',
                        help='Monitor file descriptor N (can be used multiple times, e.g., --fd 3 --fd 4)')
     parser.add_argument('--fd-pattern', dest='fd_patterns', action='append', nargs=2, 
@@ -1049,14 +1566,14 @@ Exit codes:
                        help='Save output to log files. Behavior: (1) No extension → PREFIX.log/PREFIX.errlog, '
                             '(2) Ends with .log or .out → exact filename + .err for stderr. '
                             'Examples: /tmp/test → test.log/test.errlog; /tmp/test.log → test.log/test.err')
-    parser.add_argument('--first-output-timeout', type=float, metavar='SECONDS',
-                       help='Timeout if first output not seen within N seconds')
+    parser.add_argument('-F', '--first-output-timeout', type=float, metavar='SECONDS',
+                       help='Timeout if first output not seen within N seconds (startup detection)')
     parser.add_argument('-z', '--gzip', action='store_true',
                        help='Compress log files with gzip after command completes (like tar -z, rsync -z). Saves 70-90% space.')
     parser.add_argument('-i', '--ignore-case', action='store_true',
                        help='Case-insensitive matching')
-    parser.add_argument('--idle-timeout', type=float, metavar='SECONDS',
-                       help='Timeout if no output for N seconds (idle/hang detection)')
+    parser.add_argument('-I', '--idle-timeout', type=float, metavar='SECONDS',
+                       help='Timeout if no output for N seconds (stall detection)')
     parser.add_argument('-v', '--invert-match', action='store_true',
                        help='Invert match - select non-matching lines')
     parser.add_argument('-n', '--line-number', action='store_true',
@@ -1080,7 +1597,7 @@ Exit codes:
     parser.add_argument('--source-file', metavar='FILE',
                        help='Source file being processed (for telemetry, auto-detected if possible)')
     parser.add_argument('--stderr', dest='match_stderr', action='store_const',
-                       const='stderr',
+                       const='stderr', default='both',
                        help='Match pattern against stderr only (command mode only)')
     parser.add_argument('--stderr-prefix', dest='fd_prefix', action='store_true',
                        help='Alias for --fd-prefix (for backward compatibility)')
@@ -1099,19 +1616,19 @@ Exit codes:
                        help='Force unbuffered stderr only for subprocess (advanced, use -u for both)')
     parser.add_argument('--verbose', action='store_true',
                        help='Verbose output (show debug information)')
-    parser.add_argument('--version', action='version', version='%(prog)s 0.0.3')
+    parser.add_argument('--version', action='version', version='%(prog)s 0.0.4')
     
-    # Pre-process sys.argv to handle optional pattern when timeout is provided
-    # If we have timeout options and '--' separator but no pattern before it, insert 'NONE'
+    # Pre-process sys.argv to handle optional pattern with '--' separator
+    # If '--' separator is present but no pattern before it, insert 'NONE'
     import sys as sys_module
     argv = sys_module.argv[1:]  # Skip program name
     
     # Check if any timeout option is present
-    has_timeout_option = any(opt in argv for opt in ['-t', '--timeout', '--idle-timeout', '--first-output-timeout'])
+    has_timeout_option = any(opt in argv for opt in ['-t', '--timeout', '-I', '--idle-timeout', '-F', '--first-output-timeout'])
     
     # Check if '--' is present and is the first positional argument (no pattern before it)
     # Positional args come after all options
-    if has_timeout_option and '--' in argv:
+    if '--' in argv:
         # Find the position of '--'
         separator_idx = argv.index('--')
         
@@ -1127,8 +1644,10 @@ Exit codes:
             if arg.startswith('-'):
                 # It's an option
                 # Check if this option takes a value (not a flag)
-                if arg in ['-t', '--timeout', '--idle-timeout', '--first-output-timeout', 
-                          '-m', '--max-count', '--delay-exit', '--fd', '--source-file'] or \
+                if arg in ['-t', '--timeout', '-I', '--idle-timeout', '-F', '--first-output-timeout', 
+                          '-m', '--max-count', '--delay-exit', '--fd', '--source-file', '--pid-file',
+                          '--file-prefix', '--log-dir', '--profile', '--fd-pattern', '-A', '-B', '-C',
+                          '--delay-exit-after-lines'] or \
                    (arg.startswith('-') and '=' in arg):
                     # This option takes a value
                     if '=' not in arg:
@@ -1140,10 +1659,31 @@ Exit codes:
                 break
         
         if is_first_positional:
-            # No pattern before '--', insert 'NONE'
+            # No pattern before '--', insert 'NONE' 
+            # This allows: ee -- command (timeout only mode)
+            # Or: ee -t 30 -- command (explicit timeout with no pattern)
             argv.insert(separator_idx, 'NONE')
     
-    args = parser.parse_args(argv)
+    # Use parse_known_args to allow commands with their own flags (like --id, --step)
+    # Any unknown options will be treated as part of the command
+    args, unknown = parser.parse_known_args(argv)
+    
+    # Add unknown arguments to the command list
+    # This allows: ee mist validate --id 123 --step 2
+    # Where --id and --step are treated as part of the command, not earlyexit options
+    if unknown:
+        if args.command is None:
+            args.command = []
+        args.command.extend(unknown)
+    
+    # Set default for match_stderr if not specified (parse_known_args doesn't set defaults properly for store_const)
+    if not hasattr(args, 'match_stderr') or args.match_stderr is None:
+        args.match_stderr = 'both'
+    
+    # Automatically enable quiet mode when JSON output is requested
+    # (JSON output should be the only thing on stdout)
+    if hasattr(args, 'json') and args.json:
+        args.quiet = True
     
     # Handle profile-related flags first (before other validation)
     if hasattr(args, 'list_profiles') and args.list_profiles:
@@ -1175,6 +1715,10 @@ Exit codes:
                     print(f"  • {name}", file=sys.stderr)
                 return 3
             
+            # Convert 'NONE' to None before applying profile (so profile pattern can be applied)
+            if args.pattern == 'NONE':
+                args.pattern = None
+            
             # Show which profile is being used
             if not (hasattr(args, 'quiet') and args.quiet):
                 print(f"📋 Using profile: {args.profile}", file=sys.stderr)
@@ -1192,6 +1736,10 @@ Exit codes:
     # Handle missing pattern - default to timeout-only mode if timeout options provided
     no_pattern_mode = False
     original_pattern = args.pattern
+    
+    # Treat 'NONE' (from -- preprocessing) as None
+    if args.pattern == 'NONE':
+        args.pattern = None
     
     if args.pattern is None:
         # Pattern not provided - check if timeout options are present
@@ -1213,8 +1761,8 @@ Exit codes:
                 if args.first_output_timeout:
                     timeout_info.append(f"first-output: {args.first_output_timeout}s")
                 print(f"ℹ️  Timeout-only mode (no pattern specified) - {', '.join(timeout_info)}", file=sys.stderr)
-        else:
-            # No pattern, no timeout, no command (pipe mode) - this is an error
+        elif not has_command:
+            # No pattern, no timeout, no command (pipe mode without input) - this is an error
             print("❌ Error: PATTERN is required", file=sys.stderr)
             print("", file=sys.stderr)
             print("Provide either:", file=sys.stderr)
@@ -1224,6 +1772,7 @@ Exit codes:
             print("", file=sys.stderr)
             print("Run 'earlyexit --help' for more information.", file=sys.stderr)
             return 2
+        # else: has_command but no pattern/timeout - will enter watch mode below
     
     # Handle special "no pattern" keywords
     if args.pattern in ['-', 'NONE', 'NOPATTERN']:
@@ -1245,37 +1794,52 @@ Exit codes:
             else:
                 print("ℹ️  Timeout-only mode (no pattern matching)", file=sys.stderr)
     
-    # Check if pattern looks like it might be the separator (user forgot pattern)
+    # Check if pattern looks like it might be the separator (this shouldn't happen with preprocessing)
     if args.pattern == '--':
-        print("❌ Error: Missing PATTERN argument", file=sys.stderr)
+        print("❌ Error: Missing PATTERN argument before '--' separator", file=sys.stderr)
         print("", file=sys.stderr)
-        print("Usage: earlyexit PATTERN [options] -- COMMAND [args...]", file=sys.stderr)
-        print("       earlyexit [options] -- COMMAND [args...]  (with -t/--idle-timeout)", file=sys.stderr)
+        print("Usage:", file=sys.stderr)
+        print("  earlyexit 'PATTERN' -- COMMAND [args...]    # With pattern", file=sys.stderr)
+        print("  earlyexit -- COMMAND [args...]              # No pattern (watch mode)", file=sys.stderr)
+        print("  earlyexit -t SECS -- COMMAND [args...]      # Timeout only, no pattern", file=sys.stderr)
         print("", file=sys.stderr)
         print("Examples:", file=sys.stderr)
         print("  earlyexit 'ERROR' -- ./my-script.sh", file=sys.stderr)
-        print("  earlyexit -t 30 -- ./long-script.sh  (timeout-only, no pattern)", file=sys.stderr)
-        print("  cat file.log | earlyexit 'CRITICAL'", file=sys.stderr)
+        print("  earlyexit -- mist validate --id 123 --step 2", file=sys.stderr)
+        print("  earlyexit -t 30 -- ./long-script.sh", file=sys.stderr)
         print("", file=sys.stderr)
         print("Run 'earlyexit --help' for more information.", file=sys.stderr)
         return 2
     
-    # Check if pattern looks like a command name
-    # This could be watch mode: earlyexit npm test (no pattern specified)
+    # Check if this looks like watch mode (no pattern specified, just command)
+    # Pattern is None and we have a command → watch mode
+    # OR pattern looks like a command name
     common_commands = ['echo', 'cat', 'grep', 'ls', 'python', 'python3', 'node', 'bash', 'sh', 
                        'npm', 'yarn', 'make', 'cmake', 'cargo', 'go', 'java', 'perl', 'ruby',
-                       'pytest', 'jest', 'mocha', 'terraform', 'docker', 'kubectl', 'git']
+                       'pytest', 'jest', 'mocha', 'terraform', 'docker', 'kubectl', 'git',
+                       'mist', 'aws', 'gcloud', 'az', 'curl', 'wget']
     
     # Also check if pattern looks like a path to an executable
+    # Or if it's a simple lowercase word (not all caps like ERROR/FAIL) with command args
+    import re as re_module
+    simple_word = args.pattern and re_module.match(r'^[a-z0-9_-]+$', args.pattern)  # lowercase only
+    has_command_args = args.command and len(args.command) > 0
+    
     looks_like_command = (
+        (args.pattern is None and has_command_args) or  # ee -- command
         args.pattern in common_commands or
-        (args.pattern and ('/' in args.pattern or args.pattern.startswith('.')))
+        (args.pattern and ('/' in args.pattern or args.pattern.startswith('.'))) or
+        (simple_word and has_command_args)  # Lowercase word + args = likely a command, not ERROR/FAIL pattern
     )
     
     if looks_like_command:
         # Pattern looks like a command → This is watch mode!
         # Reconstruct the full command from pattern + command args
-        full_command = [args.pattern] + args.command
+        if args.pattern:
+            full_command = [args.pattern] + args.command
+        else:
+            # Pattern is None (from `ee -- command`), command is already complete
+            full_command = args.command
         
         # Enter watch mode
         try:
@@ -1344,12 +1908,16 @@ Exit codes:
                 except:
                     pass
             
+            # Apply exit code mapping if requested
+            exit_code = map_exit_code(exit_code, args.unix_exit_codes)
             return exit_code
         except Exception as e:
             print(f"❌ Error in watch mode: {e}", file=sys.stderr)
             import traceback
             traceback.print_exc()
-            return 1
+            exit_code = 1
+            exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+            return exit_code
     
     # Initialize telemetry (opt-out, enabled by default)
     # Can be disabled via --no-telemetry flag or EARLYEXIT_NO_TELEMETRY env var
@@ -1376,6 +1944,21 @@ Exit codes:
     if telemetry_enabled:
         try:
             telemetry_collector = telemetry.init_telemetry(enabled=True)
+            
+            # Check database size and show warning if large
+            if telemetry_collector and telemetry_collector.enabled:
+                db_size_mb = telemetry_collector.get_db_size_mb()
+                if db_size_mb > 500:
+                    print(f"⚠️  Telemetry database is large ({db_size_mb:.0f} MB)", file=sys.stderr)
+                    print("   Run 'ee-clear --older-than 30d' to clean up old data", file=sys.stderr)
+                    print("   Or disable telemetry: export EARLYEXIT_NO_TELEMETRY=1", file=sys.stderr)
+                
+                # Run auto-cleanup (every 100th execution)
+                try:
+                    telemetry_collector.auto_cleanup()
+                except Exception:
+                    # Silently ignore cleanup errors
+                    pass
         except Exception:
             # Silently disable if init fails
             telemetry_enabled = False
@@ -1474,6 +2057,13 @@ Exit codes:
             record_telemetry(3, 'invalid_fd')
             return 3
     
+    # Apply -C/--context flag (sets both -B and -A)
+    if args.context is not None:
+        if args.before_context == 0:  # Only set if user didn't specify -B
+            args.before_context = args.context
+        if args.delay_exit is None:  # Only set if user didn't specify -A
+            args.delay_exit = args.context  # Time-based for -A
+    
     # Set default delay-exit based on mode
     if args.delay_exit is None:
         # Will determine based on mode later (command vs pipe)
@@ -1482,7 +2072,8 @@ Exit codes:
     # Compile default pattern
     flags = re.IGNORECASE if args.ignore_case else 0
     try:
-        pattern = compile_pattern(args.pattern, flags, args.perl_regexp)
+        pattern = compile_pattern(args.pattern, flags, args.perl_regexp, 
+                                 args.word_regexp, args.line_regexp)
     except re.error as e:
         print(f"❌ Invalid regex pattern: {e}", file=sys.stderr)
         record_telemetry(3, 'invalid_pattern')
@@ -1499,6 +2090,26 @@ Exit codes:
     # Determine mode: command mode or pipe mode
     # Command mode takes precedence if a command is provided
     is_command_mode = len(args.command) > 0
+    
+    # Validate detach mode
+    if args.detach:
+        if not is_command_mode:
+            print("❌ Error: --detach requires command mode (not pipe mode)", file=sys.stderr)
+            return 3
+        if not args.pattern:
+            print("❌ Error: --detach requires a pattern", file=sys.stderr)
+            return 3
+    
+    # Validate detach-related options
+    if args.detach_group and not args.detach:
+        print("❌ Error: --detach-group requires --detach", file=sys.stderr)
+        return 3
+    if args.detach_on_timeout and not args.detach:
+        print("❌ Error: --detach-on-timeout requires --detach", file=sys.stderr)
+        return 3
+    if args.pid_file and not args.detach:
+        print("❌ Error: --pid-file requires --detach", file=sys.stderr)
+        return 3
     
     # Only allow pipe mode if no command is specified
     if is_command_mode:
@@ -1539,6 +2150,43 @@ Exit codes:
                 exit_reason = 'completed'
             record_telemetry(exit_code, exit_reason)
             
+            # Apply exit code mapping if requested
+            original_exit_code = exit_code
+            exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+            
+            # Output JSON if requested (before returning)
+            if args.json:
+                duration = time.time() - telemetry_start_time
+                # Get log paths from auto_logging
+                from earlyexit.auto_logging import setup_auto_logging
+                stdout_log_path, stderr_log_path = setup_auto_logging(args, args.command, is_command_mode=True)
+                
+                json_output = create_json_output(
+                    exit_code=exit_code,
+                    exit_reason=exit_reason,
+                    pattern=original_pattern,
+                    matched_line=None,  # Not tracked in current implementation
+                    line_number=None,  # Not tracked in current implementation
+                    duration=duration,
+                    command=args.command if args.command else [],
+                    timeouts={
+                        'overall': args.timeout,
+                        'idle': args.idle_timeout,
+                        'first_output': args.first_output_timeout
+                    },
+                    statistics={
+                        'lines_processed': None,  # Future enhancement
+                        'bytes_processed': None,  # Future enhancement
+                        'time_to_first_output': None,  # Future enhancement
+                        'time_to_match': None  # Future enhancement
+                    },
+                    log_files={
+                        'stdout': stdout_log_path,
+                        'stderr': stderr_log_path
+                    }
+                )
+                print(json_output)
+            
             return exit_code
         else:
             # Pipe mode: process stdin (original behavior)
@@ -1550,11 +2198,67 @@ Exit codes:
             post_match_lines = [0]  # Track lines captured after match
             match_timestamp = [0]  # Track match time for delay
             source_file_container = [source_file]  # Mutable container for dynamic detection
+            
+            # Set up timeout monitoring for pipe mode
+            timed_out = [False]
+            first_output_seen = [False]
+            last_output_time = [time.time()]  # Initialize to start time
+            stop_reading = [False]  # Signal to stop reading
+            
+            def timeout_callback(reason):
+                """Handle timeout in pipe mode"""
+                timed_out[0] = True
+                stop_reading[0] = True
+                if not args.quiet:
+                    print(f"\n⏱️  Timeout: {reason}", file=sys.stderr, flush=True)
+            
+            def check_output_timeouts():
+                """Monitor thread to check for idle and first-output timeouts in pipe mode"""
+                start_time = time.time()
+                
+                while not timed_out[0] and not stop_reading[0]:
+                    current_time = time.time()
+                    
+                    # Check first output timeout
+                    if args.first_output_timeout and not first_output_seen[0]:
+                        if current_time - start_time >= args.first_output_timeout:
+                            timeout_callback(f"no first output after {args.first_output_timeout}s")
+                            break
+                    
+                    # Check idle timeout
+                    if args.idle_timeout and first_output_seen[0]:
+                        time_since_output = current_time - last_output_time[0]
+                        if time_since_output >= args.idle_timeout:
+                            timeout_callback(f"no output for {args.idle_timeout}s")
+                            break
+                    
+                    # Check every 100ms
+                    time.sleep(0.1)
+            
+            # Start output timeout monitor thread if needed
+            output_timeout_thread = None
+            if args.idle_timeout or args.first_output_timeout:
+                output_timeout_thread = threading.Thread(target=check_output_timeouts, daemon=True)
+                output_timeout_thread.start()
+            
             lines_processed = process_stream(sys.stdin, pattern, args, 0, match_count, use_color, 
-                                            "stdin", None, None, None,
+                                            "stdin", last_output_time, first_output_seen, None,
                                             match_timestamp,
                                             telemetry_collector, execution_id, telemetry_start_time, source_file_container,
                                             post_match_lines)
+            
+            # Stop monitoring thread
+            stop_reading[0] = True
+            if output_timeout_thread:
+                output_timeout_thread.join(timeout=0.5)
+            
+            # Check if we timed out
+            if timed_out[0]:
+                # Cancel overall timeout
+                if args.timeout:
+                    signal.alarm(0)
+                record_telemetry(2, 'timeout')
+                return 2
             
             # Handle delay-exit in pipe mode if match was found
             if match_count[0] > 0 and args.delay_exit and args.delay_exit > 0 and match_timestamp[0] > 0:
@@ -1594,6 +2298,38 @@ Exit codes:
             exit_code = 1 if match_count[0] == 0 else 0
             exit_reason = 'no_match' if match_count[0] == 0 else 'match'
             record_telemetry(exit_code, exit_reason, match_count[0])
+            # Apply exit code mapping if requested
+            exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+            
+            # Output JSON if requested (pipe mode)
+            if args.json:
+                duration = time.time() - telemetry_start_time
+                json_output = create_json_output(
+                    exit_code=exit_code,
+                    exit_reason=exit_reason,
+                    pattern=original_pattern,
+                    matched_line=None,  # Not tracked in pipe mode
+                    line_number=None,  # Not tracked in pipe mode
+                    duration=duration,
+                    command=[],  # Pipe mode has no command
+                    timeouts={
+                        'overall': args.timeout,
+                        'idle': args.idle_timeout,
+                        'first_output': args.first_output_timeout
+                    },
+                    statistics={
+                        'lines_processed': None,  # Future enhancement
+                        'bytes_processed': None,  # Future enhancement
+                        'time_to_first_output': None,  # Future enhancement
+                        'time_to_match': None  # Future enhancement
+                    },
+                    log_files={
+                        'stdout': None,  # Pipe mode doesn't create log files
+                        'stderr': None
+                    }
+                )
+                print(json_output)
+            
             return exit_code
         
     except TimeoutError:
@@ -1628,18 +2364,24 @@ Exit codes:
         if not args.quiet:
             print("\n^C", file=sys.stderr)
         record_telemetry(130, 'interrupted')
-        return 130  # Standard exit code for SIGINT
+        exit_code = 130  # Standard exit code for SIGINT
+        exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+        return exit_code
     
     except BrokenPipeError:
         # Gracefully handle broken pipe (e.g., when piped to head)
         record_telemetry(0, 'broken_pipe')
-        return 0
+        exit_code = 0
+        exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+        return exit_code
     
     except Exception as e:
         if not args.quiet:
             print(f"❌ Error: {e}", file=sys.stderr)
         record_telemetry(3, 'error')
-        return 3
+        exit_code = 3
+        exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+        return exit_code
 
 
 if __name__ == '__main__':

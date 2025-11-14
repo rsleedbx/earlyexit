@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "earlyexit"
-version = "0.0.3"
+version = "0.0.4"
 description = "Early exit pattern matching for command output with fast error detection"
 authors = [
     {name = "Robert Lee", email = "robert.lee@databricks.com"}
@@ -30,13 +30,16 @@ classifiers = [
 ]
 
 dependencies = [
-    "typer>=0.9.0",    # Modern CLI framework with type hints
     "psutil>=5.8.0",   # For inspecting subprocess file descriptors
     "tenacity>=8.0.0"  # For retry with exponential backoff
 ]
 
 [project.optional-dependencies]
 perl = ["regex"]  # For Perl-compatible regex (-P flag)
+dev = [
+    "pytest>=7.0.0",
+    "pytest-timeout>=2.1.0",
+]
 
 [project.scripts]
 earlyexit = "earlyexit.cli:main"
@@ -60,4 +63,13 @@ packages = ["earlyexit"]
 
 [tool.setuptools.package-data]
 earlyexit = ["py.typed"]
+
+[tool.pytest.ini_options]
+markers = [
+    "shell: marks tests as shell script integration tests (can be slow)",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
 
