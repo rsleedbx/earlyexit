@@ -15,6 +15,10 @@ timeout 1800 command 2>&1 | tee log
 timeout 1800 command 2>&1 | tee log | grep pattern
 command 2>&1 | tee log | grep -A 3 pattern
 command 2>&1 | tee log | head -100
+
+# NEVER use 2>&1 with ee - ee handles stderr automatically!
+ee -t 60 'ERROR' -- command 2>&1                 # WRONG! Causes buffering + watch mode
+ee 'pattern' -- command 2>&1                     # WRONG! ee already monitors stderr
 ```
 
 ## 🚨 WHY `timeout N command 2>&1` IS BROKEN
@@ -41,6 +45,39 @@ timeout 90 mist dml monitor --id xyz 2>&1
 - ❌ Can't see progress or errors
 - ❌ Wastes time waiting for timeout
 - ❌ Bad user experience
+
+## 🚨 WHY `ee ... -- command 2>&1` IS WRONG
+
+**NEVER append `2>&1` to ee commands!**
+
+```bash
+# ❌ WRONG - causes buffering and watch mode
+ee -t 60 'ERROR' -- mist dml monitor --id xyz 2>&1
+
+# ✅ CORRECT - ee monitors stderr automatically
+ee -t 60 'ERROR' -- mist dml monitor --id xyz
+```
+
+**What happens with `2>&1`:**
+1. Redirects stderr to stdout (merges streams)
+2. Causes **block buffering** (same problem as timeout)
+3. May trigger **watch mode** (ee thinks no pattern specified)
+4. **ee already monitors both stdout AND stderr by default!**
+
+**Correct patterns for stderr:**
+```bash
+# By default, ee monitors BOTH stdout and stderr
+ee -t 60 'ERROR' -- command
+
+# Monitor ONLY stderr (use --stderr, not 2>&1!)
+ee -t 60 --stderr 'ERROR' -- command
+
+# Detect when stderr goes quiet after errors
+ee --stderr-idle-exit 1 'SUCCESS' -- command
+
+# Stuck detection (repeating output with changing timestamps)
+ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
+```
 
 ## ✅ REQUIRED PATTERNS (USE THESE)
 ```bash
@@ -75,13 +112,49 @@ When the user's command contains these patterns, REPLACE with ee:
 
 ## Real-World Examples
 
+### Example 1: Mist Monitor (Success Case)
+
 ```bash
 # ❌ WRONG (Mist just waited 90 seconds in silence):
 timeout 90 mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15 2>&1
 
 # ✅ CORRECT (Real-time output + early exit):
 ee -t 90 'ERROR|success|completed|failed' -- mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+```
 
+### Example 2: Mist Monitor (Error + Stuck Detection)
+
+```bash
+# ❌ WRONG (uses 2>&1, -e flag triggers watch mode, no early exit):
+ee -t 60 -I 15 --max-repeat 5 --stuck-ignore-timestamps \
+  -e 'Error:|Failed|Exception|⚠️.*Error' \
+  --progress --file-prefix /tmp/mist_monitor_debug --unix-exit-codes \
+  -- mist dml monitor --id rble-3089186959 --session robert_lee-691708f8 --interval 10 2>&1
+
+# ✅ CORRECT Option 1: Traditional pattern (simplest)
+ee -t 60 -I 15 --max-repeat 5 --stuck-ignore-timestamps \
+  'Error:|Failed|Exception|⚠️.*Error' \
+  --progress --file-prefix /tmp/mist_monitor_debug --unix-exit-codes \
+  -- mist dml monitor --id rble-3089186959 --session robert_lee-691708f8 --interval 10
+
+# ✅ CORRECT Option 2: Stderr idle exit (best for Python errors that hang)
+ee -t 60 --stderr-idle-exit 1 \
+  --max-repeat 5 --stuck-ignore-timestamps \
+  'Success|Completed' \
+  --progress --file-prefix /tmp/mist_monitor_debug --unix-exit-codes \
+  -- mist dml monitor --id rble-3089186959 --session robert_lee-691708f8 --interval 10
+
+# ✅ CORRECT Option 3: Success + error patterns
+ee -t 60 -I 15 --max-repeat 5 --stuck-ignore-timestamps \
+  --success-pattern 'Completed|rows.*synced' \
+  --error-pattern 'Error:|Failed|Exception|⚠️.*Error' \
+  --progress --file-prefix /tmp/mist_monitor_debug --unix-exit-codes \
+  -- mist dml monitor --id rble-3089186959 --session robert_lee-691708f8 --interval 10
+```
+
+### Example 3: Database Creation
+
+```bash
 # ❌ WRONG (30 minutes of silence):
 timeout 1800 mist create --cloud gcp --db pg 2>&1 | tee /tmp/gcp_pg_test.log | grep -A 3 "Database created"
 
