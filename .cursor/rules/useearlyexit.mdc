@@ -163,11 +163,20 @@ ee -t 300 --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
 # With stuck pattern extraction (changing counters, stuck status)
 ee -t 300 --max-repeat 5 --stuck-pattern 'STATUS_REGEX' 'ERROR' -- command
 
+# With progress pattern (counters should change but don't)
+ee -t 300 --max-repeat 5 --progress-pattern 'COUNTER_REGEX' 'ERROR' -- command
+
+# With transition states (forward-only state machine)
+ee -t 300 --max-repeat 5 --transition-states 'IDLE>RUNNING>COMPLETED' 'ERROR' -- command
+
 # With stderr idle exit (Python/Node errors that hang)
 ee -t 300 --stderr-idle-exit 1 'SUCCESS|Completed' -- command
 
-# Comprehensive (all detections enabled)
-ee -t 300 -I 60 --max-repeat 8 --stuck-ignore-timestamps \
+# Comprehensive (all detections enabled - 4 types!)
+ee -t 300 -I 60 --max-repeat 5 \
+  --stuck-pattern 'STATUS_REGEX' \
+  --progress-pattern 'COUNTER_REGEX' \
+  --transition-states 'IDLE>RUNNING>COMPLETED' \
   --stderr-idle-exit 2 \
   --success-pattern 'SUCCESS|Completed' \
   --error-pattern 'ERROR|FAIL|Exception' \
@@ -511,15 +520,17 @@ ee --stuck-pattern '"status":\s*"pending"' --max-repeat 8 'success' -- api-poll
 ee --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' --max-repeat 5 'SUCCESS' -- mist dml monitor
 ```
 
-### When to Use Each Feature
+### When to Use Each Feature (All 4 Detection Types)
 
-| Feature | Use Case | AI Prompt |
-|---------|----------|-----------|
-| `--max-repeat 5` | Exact line repeats | "Same error 5 times" |
-| `--stuck-ignore-timestamps` | Line repeats except timestamps | "Same status, timestamp changes" |
-| `--stuck-pattern 'REGEX'` | Counters change, status stuck | "Progress counters change but status doesn't" |
-| `--stderr-idle-exit 2` | Errors printed, then hangs | "Error message appears, then silent" |
-| `-I 60` | No output at all | "Command produces no output for 60s" |
+| Feature | Use Case | AI Prompt | What to Watch |
+|---------|----------|-----------|---------------|
+| `--max-repeat 5` | Exact line repeats | "Same error 5 times" | Entire line |
+| `--stuck-ignore-timestamps` | Line repeats except timestamps | "Same status, timestamp changes" | Line minus timestamps |
+| `--stuck-pattern 'REGEX'` | Status stuck, counters change | "Status doesn't change but counters do" | Parts that should NOT change |
+| `--progress-pattern 'REGEX'` | Counters stuck, status changes | "Counters not advancing" | Parts that SHOULD change |
+| `--transition-states 'A>B>C'` | State regression | "State went backward" | State order (forward only) |
+| `--stderr-idle-exit 2` | Errors printed, then hangs | "Error message appears, then silent" | Stderr timing |
+| `-I 60` | No output at all | "Command produces no output for 60s" | Any output |
 
 ## Summary: AI Agent Checklist (Non-Interactive Mode)
 

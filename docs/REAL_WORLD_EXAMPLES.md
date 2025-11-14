@@ -1184,6 +1184,71 @@ rble-308   13   17  20   8   | RUNNING  IDLE  2  N/A  [10:35:47]
    - Compare: Same as previous line's extracted part?
 3. If status repeats 5 times → **Stuck detected!** (Exit immediately)
 
+### All Four Detection Types (Comprehensive)
+
+**Problem 14 demonstrates all 4 advanced stuck detection methods:**
+
+#### Type 1: Basic Stuck (`--max-repeat`)
+```bash
+# Entire line repeats
+ee --max-repeat 5 'ERROR' -- command
+# Use when: Entire line (including timestamps) is identical
+```
+
+#### Type 2: Stuck Pattern (`--stuck-pattern`) ← CURRENT EXAMPLE
+```bash
+# Status repeats, counters change
+ee --max-repeat 5 --stuck-pattern 'RUNNING\s+IDLE' 'ERROR' -- mist dml monitor
+# Use when: Extract specific part that should NOT change
+```
+
+#### Type 3: Progress Pattern (`--progress-pattern`) ← NEW!
+```bash
+# Counters NOT advancing
+ee --max-repeat 5 --progress-pattern '\d+\s+\d+\s+\d+(?=\s*\|)' 'ERROR' -- mist dml monitor
+# Use when: Extract specific part that SHOULD change
+
+# Example output:
+# rble-308 13 17 20 8 | RUNNING RUNNING 2 N/A [10:35:24]
+# rble-308 13 17 20 8 | RUNNING RUNNING 2 N/A [10:35:31]
+# rble-308 13 17 20 8 | RUNNING RUNNING 2 N/A [10:35:40]
+#
+# 🔁 No progress detected: Counters stuck at "13 17 20 8" (3 times)
+#    Expected: This part should change over time
+```
+
+#### Type 4: Transition States (`--transition-states`) ← NEW!
+```bash
+# State moves backward
+ee --max-repeat 3 --transition-states 'IDLE>RUNNING>COMPLETED' 'state' -- mist dml monitor
+# Use when: States should only progress forward
+
+# Example output:
+# rble-308 | RUNNING RUNNING 2 N/A [10:35:40]
+# rble-308 | RUNNING RUNNING 2 N/A [10:35:47]
+# rble-308 | RUNNING IDLE 2 N/A [10:35:55]  ← Regression!
+#
+# 🔴 Regression detected: State transition RUNNING → IDLE
+#    Expected: Forward progress only (IDLE → RUNNING → COMPLETED)
+```
+
+#### Combining All Four
+```bash
+# Comprehensive detection: ALL methods simultaneously
+ee -t 300 -I 60 --max-repeat 5 \
+  --stuck-pattern 'RUNNING\s+IDLE' \
+  --progress-pattern '\d+\s+\d+\s+\d+(?=\s*\|)' \
+  --transition-states 'IDLE>RUNNING>COMPLETED' \
+  'ERROR|SUCCESS' \
+  -- mist dml monitor --id xyz
+
+# Exits on FIRST of:
+# - Status "RUNNING IDLE" repeating (stuck-pattern)
+# - Counters not advancing (progress-pattern)
+# - State RUNNING→IDLE (transition-states)
+# - Timeout (300s), Idle (60s), or pattern match
+```
+
 ### Comparison
 
 | Approach | Detects Stuck? | Time to Exit | Why? |
@@ -1191,6 +1256,8 @@ rble-308   13   17  20   8   | RUNNING  IDLE  2  N/A  [10:35:47]
 | **`--max-repeat 5`** | ❌ No | 30+ minutes (timeout) | Counters change, lines differ |
 | **`--max-repeat 5 --stuck-ignore-timestamps`** | ❌ No | 30+ minutes (timeout) | Counters still change |
 | **`--max-repeat 5 --stuck-pattern 'RUNNING\s+IDLE...'`** | ✅ Yes | ~50 seconds | **Watches status only!** |
+| **`--max-repeat 5 --progress-pattern '\d+...'`** | ✅ Yes | ~50 seconds | **Watches counters only!** |
+| **`--transition-states 'IDLE>RUNNING>COMPLETED'`** | ✅ Yes | ~30 seconds | **Detects regressions!** |
 
 ### Real-World Use Cases for `--stuck-pattern`
 
