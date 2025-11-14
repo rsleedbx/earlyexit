@@ -6,6 +6,25 @@ alwaysApply: true
 
 **CRITICAL:** You MUST use `ee` (earlyexit) for ALL long-running commands. The patterns `timeout | tee`, `tee | grep`, and `tee | head` are FORBIDDEN and will cause minutes of buffering delays.
 
+## 🤖 AI AGENTS: NEVER USE WATCH MODE
+
+**Watch mode requires HUMAN intervention** (Ctrl+C to teach patterns). AI agents MUST use **non-interactive mode** with explicit patterns.
+
+**MANDATORY for AI agents:**
+1. ✅ **ALWAYS specify a pattern** (traditional OR success+error)
+2. ✅ **ALWAYS use `--` separator** before command
+3. ❌ **NEVER use `-e` alone** (triggers watch mode)
+4. ❌ **NEVER append `2>&1`** to commands
+
+**Default pattern when unsure:**
+```bash
+# Use ERROR pattern by default for monitoring commands
+ee -t 300 'ERROR' -- command
+
+# For success detection, use success patterns
+ee -t 300 --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+```
+
 ## ❌ FORBIDDEN PATTERNS (DO NOT USE)
 ```bash
 # These patterns are BROKEN and cause buffering delays:
@@ -115,6 +134,49 @@ ee -t 120 --stderr-idle-exit 2 --max-repeat 8 \
 - `-e` alone = no traditional pattern, no success pattern → watch mode
 - Watch mode = different code path, stuck detection disabled
 - Result = command runs until timeout even with `--max-repeat`!
+
+## 🤖 AI AGENT DECISION TREE (Non-Interactive Mode)
+
+**Step 1: Choose pattern mode**
+
+```
+Do you know what success looks like?
+├─ YES → Use success + error patterns
+│         ee --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+│
+└─ NO → Use traditional error pattern
+          ee 'ERROR|FAIL|Exception' -- command
+```
+
+**Step 2: Add timeouts and detection**
+
+```bash
+# Standard monitoring (recommended baseline)
+ee -t 300 'ERROR|FAIL' -- command
+
+# With idle detection (command might stall)
+ee -t 300 -I 60 'ERROR|FAIL' -- command
+
+# With stuck detection (repeating output)
+ee -t 300 --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
+
+# With stderr idle exit (Python/Node errors that hang)
+ee -t 300 --stderr-idle-exit 1 'SUCCESS|Completed' -- command
+
+# Comprehensive (all detections enabled)
+ee -t 300 -I 60 --max-repeat 8 --stuck-ignore-timestamps \
+  --stderr-idle-exit 2 \
+  --success-pattern 'SUCCESS|Completed' \
+  --error-pattern 'ERROR|FAIL|Exception' \
+  --progress --unix-exit-codes \
+  -- command
+```
+
+**Step 3: Verify no watch mode**
+
+If you see `"Watch mode enabled"` in output:
+- ❌ You did it wrong! 
+- ✅ Fix: Add a traditional pattern OR both `-s` and `-e`
 
 ## ✅ REQUIRED PATTERNS (USE THESE)
 ```bash
@@ -377,10 +439,46 @@ IF command contains (--output json|--format=json|--format json)
 THEN add -q flag to ee
 ```
 
-## Summary
+## Summary: AI Agent Checklist (Non-Interactive Mode)
 
-- ❌ NEVER suggest: `timeout | tee`, `tee | grep`, `tee | head`
-- ✅ ALWAYS suggest: `ee -t timeout 'pattern' command`
-- ✅ For logs: Add `--file-prefix /tmp/logname`
-- ✅ For context: Add `--delay-exit 10`
-- ✅ **For JSON/jq: ALWAYS add `-q` flag**
+### ❌ NEVER DO (Forbidden Patterns)
+- ❌ NEVER use `timeout | tee`, `tee | grep`, `tee | head`
+- ❌ NEVER append `2>&1` to ee commands
+- ❌ NEVER use `-e` (error pattern) alone without `-s` (success pattern)
+- ❌ NEVER trigger watch mode (requires human Ctrl+C intervention)
+- ❌ NEVER omit the pattern (causes watch mode)
+
+### ✅ ALWAYS DO (Required Patterns)
+- ✅ **ALWAYS specify a pattern**: `ee 'ERROR' -- command` OR `ee -s 'SUCCESS' -e 'ERROR' -- command`
+- ✅ **ALWAYS use `--` separator**: `ee -t 300 'ERROR' -- command`
+- ✅ **ALWAYS add timeout**: `ee -t 300 'pattern' -- command`
+- ✅ **For JSON/jq: ALWAYS add `-q` flag**: `ee -q 'error' -- command | jq`
+- ✅ **For logs: Use auto-export**: Run `source ~/.ee_env.$$` after ee, then use `$EE_STDOUT_LOG`
+
+### 🎯 Quick Reference for Common Cases
+
+```bash
+# Monitoring command (default pattern when unsure)
+ee -t 300 'ERROR|FAIL' -- command
+
+# Python/Node.js errors that hang
+ee -t 300 --stderr-idle-exit 1 'SUCCESS' -- command
+
+# Repeating output (stuck detection)
+ee -t 300 --max-repeat 8 --stuck-ignore-timestamps 'ERROR' -- command
+
+# Success detection
+ee -t 300 --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+
+# Comprehensive (when you need everything)
+ee -t 300 -I 60 --max-repeat 8 --stuck-ignore-timestamps \
+  --stderr-idle-exit 2 \
+  --success-pattern 'SUCCESS|Completed' \
+  --error-pattern 'ERROR|FAIL|Exception' \
+  --progress --unix-exit-codes \
+  -- command
+```
+
+### 🚨 If You See "Watch Mode Enabled" → YOU DID IT WRONG!
+- Fix: Add a traditional pattern `'ERROR'` OR both `-s` and `-e`
+- Watch mode = human intervention required = automation breaks
