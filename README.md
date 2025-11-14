@@ -170,6 +170,9 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 - 🔄 Profile system
 - 🤝 AI assistant integration
 - 🔧 **Programmatic access** (JSON, Unix exit codes)
+- ✅ **Success/Error pattern matching** - Early exit on success OR error
+- 🚫 **Pattern exclusions** - Filter out false positives
+- 🧪 **Pattern testing mode** - Test patterns against logs without running commands
 
 ### Unique Capabilities
 - 🔥 **Stall detection** - No other tool does this easily
@@ -182,6 +185,113 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 </table>
 
 [Complete feature comparison →](docs/MODE_COMPARISON.md)
+
+---
+
+## 🚨 The `timeout N command 2>&1` Problem
+
+**Have you ever run a command like this and seen NO output for minutes?**
+
+```bash
+timeout 90 mist dml monitor --id xyz --session abc 2>&1
+# Stares at blank screen for 90 seconds... 
+# Then ALL output appears at once! 😤
+```
+
+### Why This Happens
+
+When a command is not connected to a terminal (TTY), it switches to **block buffering**:
+
+```
+Terminal → Line-buffered (flush on \n) → Real-time output ✅
+Pipe/Redirect → Block-buffered (4KB blocks) → Minutes of silence ❌
+```
+
+**The result:**
+- ❌ No output until 4KB buffer fills OR timeout expires
+- ❌ Can't see errors or progress
+- ❌ User thinks command is hung
+- ❌ Wastes time waiting
+
+### The Solution: Use `ee`
+
+```bash
+# ❌ WRONG: 90 seconds of silence
+timeout 90 mist dml monitor --id xyz --session abc 2>&1
+
+# ✅ CORRECT: Real-time output
+ee -t 90 'ERROR|success|completed' -- mist dml monitor --id xyz --session abc
+```
+
+**Why `ee` works:**
+- ✅ Automatically unbuffers output (real-time display)
+- ✅ Exits early on pattern match (saves time)
+- ✅ Built-in timeout support
+- ✅ Pattern matching to detect success/failure
+
+> **Note:** This applies to ANY command with `timeout N command 2>&1` or pipes.  
+> See [`.cursor/rules/useearlyexit.mdc`](.cursor/rules/useearlyexit.mdc) for complete AI agent rules.
+
+---
+
+## Common Use Cases: Where `ee` Excels
+
+### 1. **Terraform/Cloud Deployments with False Positives**
+
+```bash
+# ❌ grep catches benign "Error: early error detection" messages
+grep 'Error' terraform.log
+
+# ✅ ee filters false positives easily
+ee 'Error' --exclude 'early error detection' -- terraform apply
+```
+
+### 2. **CI/CD: Exit Early on Success OR Failure**
+
+```bash
+# ❌ grep can only watch for ONE pattern (success OR error, not both)
+docker build -t myapp . | grep 'ERROR'  # Misses success, waits forever
+
+# ✅ ee watches for both, exits on first match
+ee --success-pattern 'Successfully built' \
+   --error-pattern 'ERROR|failed' \
+   -- docker build -t myapp .
+```
+
+### 3. **Detect Hung/Stalled Processes**
+
+```bash
+# ❌ grep can't detect "no output" (requires complex shell scripts)
+./run-migrations.sh | grep 'ERROR'
+
+# ✅ ee detects stalls with idle timeout
+ee -I 300 'ERROR' -- ./run-migrations.sh  # Exit if no output for 5 min
+```
+
+### 4. **Test Patterns Before Production**
+
+```bash
+# ❌ grep: slow iteration on large logs, no statistics
+grep 'ERROR' huge-log.txt | grep -v 'OK'  # Wait... adjust... repeat...
+
+# ✅ ee: instant feedback with statistics
+cat huge-log.txt | ee 'ERROR' --test-pattern --exclude 'ERROR_OK'
+# Shows: Total lines, matched lines, excluded lines, line numbers
+```
+
+### 5. **Kubernetes Deployment Monitoring**
+
+```bash
+# ❌ grep: complex background jobs and signal handling
+kubectl rollout status deployment/myapp | grep 'successfully rolled out'  # What if it fails?
+
+# ✅ ee: simple, clear, reliable
+ee --success-pattern 'successfully rolled out' \
+   --error-pattern 'Error|Failed' \
+   -- kubectl rollout status deployment/myapp
+```
+
+[**See 10 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
 
 ---
 
@@ -228,9 +338,13 @@ ee 'Error' ./deploy.sh
 ee -z 'Error' ./long-job.sh
 # Creates: ee-long_job_sh-12345.log.gz
 
-# Can be head of chain - pipe output to other tools
-ee 'Error' terraform apply | grep 'resource'
-ee 'WARN' ./app | tee warnings.log
+# Perfect for pipe chains - just like grep
+ee -q 'Error' terraform apply | grep 'aws_instance' | tee resources.txt
+ee -q 'success' ./deploy.sh | grep -v 'DEBUG' | tee results.txt
+
+# JSON workflows (use -q to suppress ee's messages)
+ee -q 'Error' -- databricks pipelines get --output json | jq '.name'
+ee -q 'error' -- aws s3api list-buckets | jq '.Buckets[].Name'
 
 # Detach mode - start service, wait for ready, let it run
 ee -D 'Server listening' ./start-server.sh
@@ -475,11 +589,150 @@ ee --progress -t 1800 'Error' -- terraform apply
 ee --progress --json --unix-exit-codes -t 1800 'Error' -- terraform apply > result.json
 ```
 
+### Success & Error Pattern Matching
+
+Monitor for **both success and failure** patterns, exit early on whichever matches first:
+
+```bash
+# Exit early on success OR error (whichever comes first)
+ee -t 1800 \
+  --success-pattern 'Apply complete!' \
+  --error-pattern 'Error|Failed' \
+  -- terraform apply
+
+# Exit codes:
+# 0 = success pattern matched
+# 1 = error pattern matched
+# 2 = timeout (neither matched)
+```
+
+**Real-world examples:**
+
+```bash
+# Database migration: exit on success or error
+ee -t 1800 \
+  --success-pattern 'Migrations? applied successfully' \
+  --error-pattern 'Migration failed|ERROR|FATAL' \
+  -- ./run-migrations.sh
+
+# Docker build: exit when complete or failed
+ee -t 1200 \
+  --success-pattern 'Successfully built|Successfully tagged' \
+  --error-pattern 'ERROR|failed' \
+  -- docker build -t myapp .
+
+# Kubernetes deployment: wait for ready state
+ee -t 600 \
+  --success-pattern 'deployment .* successfully rolled out' \
+  --error-pattern 'Error|Failed' \
+  -- kubectl rollout status deployment/myapp
+```
+
+**With Unix exit codes** (for shell scripts):
+
+```bash
+ee --unix-exit-codes \
+   --success-pattern 'deployed' \
+   --error-pattern 'failed' \
+   -- ./deploy.sh
+
+if [ $? -eq 0 ]; then
+    echo "✅ Deployment successful"
+else
+    echo "❌ Deployment failed"
+fi
+```
+
+**Pattern exclusions** (filter false positives):
+
+```bash
+# Terraform prints "Error: early error detection" in normal output
+ee --success-pattern 'Apply complete!' \
+   --error-pattern 'Error' \
+   --exclude 'Error: early error detection' \
+   -- terraform plan
+```
+
+**Pattern modes:**
+
+| Mode | Pattern Matched | Exit Code |
+|------|----------------|-----------|
+| Success-only (`-s`) | Yes | 0 |
+| Success-only | No | 1 |
+| Error-only (`-e`) | Yes | 1 |
+| Error-only | No | 0 |
+| Both patterns | First match | 0 or 1 |
+| Neither matches | - | 1 |
+
+### Pattern Testing Mode
+
+Test patterns against existing logs **without running commands**:
+
+```bash
+# Test pattern against log file
+cat terraform.log | ee 'Error|Failed' --test-pattern
+
+# Or with redirect
+ee 'ERROR' --test-pattern < application.log
+
+# Output:
+# ======================================================================
+# Pattern Test Results
+# ======================================================================
+# 
+# 📊 Statistics:
+#    Total lines:     1,247
+#    Matched lines:   3
+# 
+# ✅ Pattern matched 3 time(s):
+# 
+# Line     42:  Error: Resource already exists
+# Line    156:  Failed to acquire lock
+# Line    289:  Error: Invalid configuration
+```
+
+**Test with exclusions** (refine patterns):
+
+```bash
+cat terraform.log | ee 'Error' \
+  --test-pattern \
+  --exclude 'Error: early error detection'
+
+# Shows which lines were excluded:
+# Matched lines:   3
+# Excluded lines:  2
+```
+
+**Test dual patterns**:
+
+```bash
+cat deploy.log | ee \
+  --test-pattern \
+  --success-pattern 'deployed successfully' \
+  --error-pattern 'ERROR|FATAL'
+
+# Shows separate counters:
+# Success matches: 1
+# Error matches:   2
+```
+
+**Use cases:**
+- 🧪 Test patterns before using in production
+- 🔍 Understand what matches in existing logs
+- 🎯 Refine patterns to eliminate false positives
+- 📚 Build pattern library iteratively
+
+**Exit codes:**
+- `0` = Pattern matched (one or more matches)
+- `1` = No matches found
+- `3` = Error (invalid pattern)
+
 ---
 
 ## Documentation
 
 ### 📖 User Guides
+- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 10 scenarios where `ee` excels over `grep`
 - [**Complete User Guide**](docs/USER_GUIDE.md) - Comprehensive usage examples
 - [**Exit Codes Reference**](docs/EXIT_CODES.md) - All exit codes explained (including detach mode)
 - [Pattern Matching Reference](docs/REGEX_REFERENCE.md) - Regex patterns & examples
@@ -526,6 +779,100 @@ cd <your-project-directory> && \
 ✅ **Starts suggesting:** Real-time, tested solutions
 
 [AI Assistant Integration Guide →](docs/AI_ASSISTANT_GUIDE.md)
+
+---
+
+## Common Pitfalls & Best Practices
+
+### ✅ Pipe Chains Work Perfectly
+
+`ee` is designed to work seamlessly in Unix pipe chains, just like `grep`:
+
+```bash
+# All of these just work:
+cat app.log | ee 'ERROR' | head -10
+ee 'ERROR' terraform apply | grep 'resource'
+./deploy.sh 2>&1 | ee 'success|Error' | tee deploy.log
+```
+
+**Key:** `ee`'s informational messages go to **stderr**, so they never interfere with piped data on **stdout**.
+
+### 🚨 Piping JSON Commands to `jq`
+
+**Problem:** `ee`'s informational messages mix with JSON output and break `jq`:
+
+```bash
+# ❌ BREAKS: ee messages mix with JSON
+ee -t 30 'Error' -- databricks pipelines get --output json 2>&1 | jq '.name'
+# Error: parse error: Invalid numeric literal at line 1, column 3
+```
+
+**Solution:** Use `--quiet` (or `-q`) to suppress `ee` messages:
+
+```bash
+# ✅ WORKS: Only JSON passes through
+ee -t 30 -q 'Error' -- databricks pipelines get --output json | jq '.name'
+```
+
+**Why:** By default, `ee` prints status messages ("📝 Logging to:...", etc.) to stdout. With `--quiet`, these messages are suppressed, so only the command's output goes to the pipe.
+
+### 🎯 JSON Output Best Practices
+
+When working with JSON-producing commands:
+
+```bash
+# API calls
+ee -q 'error' -- curl -s https://api.example.com/data | jq '.results'
+
+# Cloud CLIs
+ee -q 'Error|error' -- aws s3api list-buckets | jq '.Buckets[].Name'
+ee -q 'Error' -- gcloud compute instances list --format=json | jq '.[].name'
+ee -q 'Error' -- az vm list | jq '.[].name'
+
+# Database tools
+ee -q 'ERROR' -- psql -t -c "SELECT json_agg(users) FROM users" | jq '.'
+```
+
+**Tip for AI Assistants:** When the command includes `--output json`, `--format=json`, or pipes to `jq`, always add `--quiet` to `ee`.
+
+### 📊 Using `--json` for Programmatic Parsing
+
+If you need both `ee` monitoring AND structured output, use `ee --json`:
+
+```bash
+# Get both monitoring and structured results
+result=$(ee -t 30 --json 'Error' -- databricks pipelines get --output json)
+
+# Parse ee's metadata
+echo "$result" | jq '.exit_code, .duration_seconds'
+
+# The actual command output is in the log files
+log_file=$(echo "$result" | jq -r '.log_files.stdout')
+cat "$log_file" | jq '.name, .state'
+```
+
+### 🔄 Combining with Other Tools
+
+```bash
+# ✅ GOOD: ee at the head
+ee -q 'Error' terraform apply | grep 'resource'
+ee -q 'WARN' ./deploy.sh | tee deploy.log
+
+# ⚠️ CAREFUL: ee in the middle (pipe mode)
+./deploy.sh 2>&1 | ee 'Error|Warning' | jq '.results'
+# Note: In pipe mode, ee exits immediately on match, cutting off the rest
+```
+
+### 🎓 Teaching AI Agents
+
+Add this pattern to your AI coding assistant's instructions:
+
+```
+When using earlyexit (ee) with JSON output:
+- ALWAYS add --quiet or -q flag
+- Pattern: ee -q 'Error' -- command | jq
+- Why: Prevents ee messages from mixing with JSON
+```
 
 ---
 

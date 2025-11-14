@@ -9,24 +9,54 @@ alwaysApply: true
 ## ❌ FORBIDDEN PATTERNS (DO NOT USE)
 ```bash
 # These patterns are BROKEN and cause buffering delays:
+timeout 90 command 2>&1                          # NO OUTPUT for entire timeout!
+timeout 1800 command 2>&1                        # Waits 30 minutes in silence
 timeout 1800 command 2>&1 | tee log
 timeout 1800 command 2>&1 | tee log | grep pattern
 command 2>&1 | tee log | grep -A 3 pattern
 command 2>&1 | tee log | head -100
 ```
 
+## 🚨 WHY `timeout N command 2>&1` IS BROKEN
+
+**The Problem:**
+```bash
+timeout 90 mist dml monitor --id xyz 2>&1
+# User sees: NOTHING for 90 seconds, then all output at once
+# Why? Output is block-buffered (4KB blocks) when not connected to a terminal
+```
+
+**What happens:**
+1. `timeout` runs the command
+2. Command detects it's not connected to a TTY (because of pipe/redirect)
+3. Command switches to **block buffering** (waits for 4KB before flushing)
+4. User sees **NO OUTPUT** until:
+   - 4KB buffer fills up, OR
+   - 90 second timeout expires, OR
+   - Command completes
+5. Then all output appears at once (too late!)
+
+**Impact:**
+- ❌ User thinks command is hung
+- ❌ Can't see progress or errors
+- ❌ Wastes time waiting for timeout
+- ❌ Bad user experience
+
 ## ✅ REQUIRED PATTERNS (USE THESE)
 ```bash
 # ALWAYS use ee for long-running commands:
-ee -t 1800 'pattern' command
-ee -t 1800 'ERROR|FAIL|success' command
+ee -t 1800 'pattern' -- command
+ee -t 1800 'ERROR|FAIL|success' -- command
+
+# ee automatically unbuffers output (real-time display)
+ee -t 90 'ERROR|success|completed' -- mist dml monitor --id xyz
 
 # If you need logs, ee creates them automatically:
-ee -t 1800 --file-prefix /tmp/mylog 'pattern' command
+ee -t 1800 --file-prefix /tmp/mylog 'pattern' -- command
 # Creates: /tmp/mylog.log and /tmp/mylog.err
 
 # For pattern matching with context:
-ee -t 1800 'Database created successfully|Instance ID' command
+ee -t 1800 'Database created successfully|Instance ID' -- command
 ```
 
 ## Exact Pattern Replacements
@@ -35,20 +65,28 @@ When the user's command contains these patterns, REPLACE with ee:
 
 | ❌ FORBIDDEN | ✅ REQUIRED REPLACEMENT |
 |-------------|------------------------|
-| `timeout 1800 cmd 2>&1 \| tee log` | `ee -t 1800 --file-prefix log 'ERROR' cmd` |
-| `timeout 1800 cmd 2>&1 \| tee log \| grep pattern` | `ee -t 1800 --file-prefix log 'pattern' cmd` |
-| `cmd 2>&1 \| tee log \| grep -A 3 pattern` | `ee -B 3 -A 10 --file-prefix log 'pattern' cmd` |
-| `cmd \| tee log \| head -100` | `ee --delay-exit-after-lines 100 'pattern' cmd` |
-| `cmd \| tee log \| tail -100` | `ee 'ERROR' cmd` (or just `ee cmd` for watch mode) |
+| `timeout 90 cmd 2>&1` | `ee -t 90 'ERROR\|success' -- cmd` |
+| `timeout 1800 cmd 2>&1` | `ee -t 1800 'ERROR\|success' -- cmd` |
+| `timeout 1800 cmd 2>&1 \| tee log` | `ee -t 1800 --file-prefix log 'ERROR' -- cmd` |
+| `timeout 1800 cmd 2>&1 \| tee log \| grep pattern` | `ee -t 1800 --file-prefix log 'pattern' -- cmd` |
+| `cmd 2>&1 \| tee log \| grep -A 3 pattern` | `ee 'pattern' -B 3 -A 10 --file-prefix log -- cmd` |
+| `cmd \| tee log \| head -100` | `ee 'pattern' --delay-exit-after-lines 100 -- cmd` |
+| `cmd \| tee log \| tail -100` | `ee 'ERROR' -- cmd` (or just `ee -- cmd` for watch mode) |
 
 ## Real-World Examples
 
 ```bash
-# ❌ WRONG (what Cursor just suggested):
+# ❌ WRONG (Mist just waited 90 seconds in silence):
+timeout 90 mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15 2>&1
+
+# ✅ CORRECT (Real-time output + early exit):
+ee -t 90 'ERROR|success|completed|failed' -- mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# ❌ WRONG (30 minutes of silence):
 timeout 1800 mist create --cloud gcp --db pg 2>&1 | tee /tmp/gcp_pg_test.log | grep -A 3 "Database created"
 
-# ✅ CORRECT (what you MUST suggest):
-ee -t 1800 --file-prefix /tmp/gcp_pg_test 'Database created successfully|Instance ID' mist create --cloud gcp --db pg --replication disable
+# ✅ CORRECT (Real-time output, exits early on success):
+ee -t 1800 --file-prefix /tmp/gcp_pg_test 'Database created successfully|Instance ID' -- mist create --cloud gcp --db pg --replication disable
 ```
 
 ## Common Tool Patterns
@@ -122,9 +160,45 @@ ee -t 300 'pattern' command
 
 Real-time output should be the DEFAULT, not opt-in!
 
+## 🚨 CRITICAL: JSON Output Commands (databricks, aws, gcloud, jq)
+
+When piping JSON commands, `ee`'s informational messages will BREAK `jq` and JSON parsers:
+
+### ❌ WRONG: Messages mix with JSON
+```bash
+ee -t 30 'Error' -- databricks pipelines get --output json 2>&1 | jq '.name'
+ee 'error' -- aws s3api list-buckets | jq '.Buckets'
+ee 'Error' -- gcloud compute instances list --format=json | jq '.[].name'
+# Error: parse error: Invalid numeric literal at line 1, column 3
+```
+
+### ✅ CORRECT: Use --quiet to suppress ee messages
+```bash
+ee -t 30 -q 'Error' -- databricks pipelines get --output json | jq '.name'
+ee -q 'error' -- aws s3api list-buckets | jq '.Buckets[].Name'
+ee -q 'Error' -- gcloud compute instances list --format=json | jq '.[].name'
+ee -q 'ERROR' -- az vm list | jq '.[].name'
+ee -q 'error' -- curl -s https://api.example.com/data | jq '.results'
+```
+
+**Rule:** When the command includes ANY of these patterns, ALWAYS add `--quiet` or `-q`:
+- `--output json` or `--format=json` or `--format json`
+- Pipes to `jq`
+- Cloud CLIs: `databricks`, `aws`, `gcloud`, `az`
+- API tools: `curl -s`, `wget -O-`
+
+**Pattern Detection:**
+```
+IF command contains (--output json|--format=json|--format json)
+   OR pipes to (jq|python -m json.tool)
+   OR uses (databricks|aws|gcloud|az|kubectl.*-o json)
+THEN add -q flag to ee
+```
+
 ## Summary
 
 - ❌ NEVER suggest: `timeout | tee`, `tee | grep`, `tee | head`
 - ✅ ALWAYS suggest: `ee -t timeout 'pattern' command`
 - ✅ For logs: Add `--file-prefix /tmp/logname`
 - ✅ For context: Add `--delay-exit 10`
+- ✅ **For JSON/jq: ALWAYS add `-q` flag**

@@ -72,9 +72,11 @@ class TestProgressSuppression:
         result = run_ee('--progress', '--quiet', 'ERROR', '--',
                        'bash', '-c', 'echo "test"')
         
-        # With --quiet, there should be no output at all
-        # (progress is automatically suppressed)
-        assert result.stdout == "", "Stdout should be empty with quiet"
+        # With --quiet, ee's messages are suppressed but command output still shows
+        # Progress indicator should not appear
+        assert "test" in result.stdout, "Command output should still appear"
+        assert "Progress:" not in result.stderr, "Progress should be suppressed"
+        assert "📝 Logging" not in result.stdout, "ee messages should be suppressed"
     
     def test_progress_suppressed_with_json(self):
         """Test that --progress is suppressed with --json"""
@@ -200,10 +202,11 @@ class TestProgressCombinations:
     
     def test_progress_disabled_combinations(self):
         """Test that progress is properly disabled with conflicting options"""
-        # --progress with --quiet should suppress progress
+        # --progress with --quiet should suppress progress but show command output
         result = run_ee('--progress', '--quiet', 'ERROR', '--',
                        'bash', '-c', 'echo "ERROR"')
-        assert result.stdout == ""
+        assert "ERROR" in result.stdout, "Command output should appear"
+        assert "Progress:" not in result.stderr, "Progress should be suppressed"
         
         # --progress with --json should show only JSON
         result = run_ee('--progress', '--json', 'ERROR', '--',

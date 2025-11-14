@@ -182,8 +182,9 @@ class TestJSONFields:
         assert 0 < data['duration_seconds'] < 10, "Duration should be reasonable"
     
     def test_json_log_files_field(self):
-        """Test that log_files field is populated"""
-        result = run_ee('--json', 'ERROR', '--', 'bash', '-c', 'echo "ERROR"')
+        """Test that log_files field is populated when logging is enabled"""
+        # Use --log flag to force logging (smart auto-logging won't log simple commands)
+        result = run_ee('--json', '--log', 'ERROR', '--', 'bash', '-c', 'echo "ERROR"')
         data = json.loads(result.stdout)
         
         assert 'log_files' in data

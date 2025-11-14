@@ -318,7 +318,8 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                    match_timestamp: Optional[list] = None, telemetry_collector=None, 
                    execution_id: Optional[str] = None, start_time: Optional[float] = None,
                    source_file_container: Optional[list] = None, post_match_lines: Optional[list] = None,
-                   log_file=None, lines_processed: Optional[list] = None):
+                   log_file=None, lines_processed: Optional[list] = None,
+                   success_pattern: Optional[Pattern] = None, match_type: Optional[list] = None):
     """
     Process a stream (stdout or stderr) line by line
     
@@ -365,7 +366,9 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                     log_file.write(line)
                     log_file.flush()
                 
-                if not args.quiet:
+                # Always print command output (--quiet only suppresses ee's messages, not command output)
+                # Exception: --json mode, which sets its own output suppression
+                if not args.json:
                     print(line.rstrip('\n'), flush=True)
         except:
             pass
@@ -420,13 +423,68 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                 if len(context_buffer) > context_size:
                     context_buffer.pop(0)
             
-            # Check for match
-            match = pattern.search(line_stripped)
-            is_match = match is not None
+            # Check exclusion patterns first (if any)
+            excluded = False
+            if hasattr(args, 'exclude_patterns') and args.exclude_patterns:
+                for exclude_pattern_str in args.exclude_patterns:
+                    try:
+                        # Compile exclusion pattern with same flags as main pattern
+                        flags = re.IGNORECASE if args.ignore_case else 0
+                        exclude_pattern = re.compile(exclude_pattern_str, flags)
+                        if exclude_pattern.search(line_stripped):
+                            excluded = True
+                            break
+                    except re.error:
+                        # Invalid exclusion pattern - skip it
+                        pass
             
-            # Invert if requested
-            if args.invert_match:
-                is_match = not is_match
+            # If line is excluded, skip pattern matching
+            if excluded:
+                continue
+            
+            # Check for success pattern first (if provided)
+            if success_pattern:
+                success_match = success_pattern.search(line_stripped)
+                if success_match:
+                    # Success pattern matched! Mark as success (first match wins)
+                    if match_type is not None and match_type[0] == 'none':
+                        match_type[0] = 'success'
+                    match_count[0] += 1
+                    current_time = time.time()
+                    
+                    # Record first match timestamp
+                    if match_timestamp is not None and match_timestamp[0] == 0:
+                        match_timestamp[0] = current_time
+                    
+                    # Use success_match as the match object for highlighting/recording
+                    match = success_match
+                    is_match = True
+                    # Skip to output handling below
+                    # Note: Don't check invert_match for success patterns
+                else:
+                    # No success match, check error pattern
+                    match = pattern.search(line_stripped) if pattern else None
+                    is_match = match is not None
+                    
+                    # Invert if requested (only applies to error pattern)
+                    if args.invert_match:
+                        is_match = not is_match
+                    
+                    # Mark as error (first match wins)
+                    if is_match and match_type is not None and match_type[0] == 'none':
+                        match_type[0] = 'error'
+            else:
+                # Traditional mode or error-only mode: check main pattern
+                match = pattern.search(line_stripped)
+                is_match = match is not None
+                
+                # Invert if requested
+                if args.invert_match:
+                    is_match = not is_match
+                
+                # Mark as error in traditional mode (first match wins)
+                if is_match and match_type is not None and match_type[0] == 'none':
+                    match_type[0] = 'error'
             
             if is_match:
                 match_count[0] += 1
@@ -463,8 +521,8 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                     log_file.write(line)
                     log_file.flush()
                 
-                # Output the line if not quiet
-                if not args.quiet:
+                # Output the line (--quiet only suppresses ee's messages, not command output)
+                if not args.json:
                     # Print context lines before the match (like grep -B)
                     if context_size > 0 and len(context_buffer) > 0:
                         # Print all buffered lines except the current one (which we'll print below)
@@ -523,7 +581,7 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                     post_match_lines[0] += 1
                     # Check if we've exceeded line limit
                     if post_match_lines[0] >= args.delay_exit_after_lines:
-                        if not args.quiet:
+                        if not args.json:
                             prefix = ""
                             if args.line_number:
                                 prefix = f"{line_number}:"
@@ -532,7 +590,7 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                             print(f"{prefix}{line_stripped}", flush=True)
                         return line_number - line_number_offset
                 
-                if not args.quiet:
+                if not args.json:
                     prefix = ""
                     if args.line_number:
                         prefix = f"{line_number}:"
@@ -588,7 +646,8 @@ def kill_process_group(pgid: int):
 
 def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_collector=None, 
                      execution_id: Optional[str] = None, telemetry_start_time: Optional[float] = None,
-                     initial_source_file: Optional[str] = None):
+                     initial_source_file: Optional[str] = None, success_pattern: Optional[Pattern] = None,
+                     error_pattern: Optional[Pattern] = None):
     """
     Run earlyexit in command mode - execute a command and monitor its output
     
@@ -621,9 +680,9 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             # Display "Logging to:" message unless quiet or JSON mode
             if not args.quiet and not args.json:
                 mode_msg = " (appending)" if file_mode == 'a' else ""
-                print(f"📝 Logging to{mode_msg}:")
-                print(f"   stdout: {stdout_log_path}")
-                print(f"   stderr: {stderr_log_path}")
+                print(f"📝 Logging to{mode_msg}:", file=sys.stderr)
+                print(f"   stdout: {stdout_log_path}", file=sys.stderr)
+                print(f"   stderr: {stderr_log_path}", file=sys.stderr)
         except Exception as e:
             if not args.quiet:
                 print(f"⚠️  Warning: Could not create log files: {e}", file=sys.stderr)
@@ -631,6 +690,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             stderr_log_file = None
     
     match_count = [0]  # Use list to make it mutable across threads
+    match_type = ['none']  # Track which type matched: 'success', 'error', or 'none'
     post_match_lines = [0]  # Track lines captured after match
     timed_out = [False]  # Track if we timed out
     timeout_reason = [""]  # Track why we timed out
@@ -895,7 +955,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                          last_output_time, first_output_seen, first_time,
                                          match_timestamp,
                                          telemetry_collector, execution_id, start_time, source_file_container,
-                                         post_match_lines, log_f, statistics['lines_processed'])
+                                         post_match_lines, log_f, statistics['lines_processed'],
+                                         success_pattern, match_type)
                         except:
                             pass
                     return monitor
@@ -917,7 +978,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                             if stderr_log_file:
                                 stderr_log_file.write(line.decode('utf-8', errors='replace'))
                                 stderr_log_file.flush()
-                            if not args.quiet:
+                            if not args.json:
                                 print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
                     except:
                         pass
@@ -934,7 +995,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                             if stdout_log_file:
                                 stdout_log_file.write(line.decode('utf-8', errors='replace'))
                                 stdout_log_file.flush()
-                            if not args.quiet:
+                            if not args.json:
                                 print(line.decode('utf-8', errors='replace'), end='', flush=True)
                     except:
                         pass
@@ -1069,7 +1130,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                  last_output_time, first_output_seen, first_time_for_stream,
                                  match_timestamp,
                                  telemetry_collector, execution_id, start_time, source_file_container,
-                                 post_match_lines, log_file_for_stream, statistics['lines_processed'])
+                                 post_match_lines, log_file_for_stream, statistics['lines_processed'],
+                                 success_pattern, match_type)
                 except:
                     pass
             
@@ -1191,13 +1253,13 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             
             # If no match found, drain the other stream
             if match_count[0] < args.max_count:
-                if args.match_stderr == 'stdout' and not args.quiet:
+                if args.match_stderr == 'stdout' and not args.json:
                     try:
                         for line in process.stderr:
                             print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
                     except:
                         pass
-                elif args.match_stderr == 'stderr' and not args.quiet:
+                elif args.match_stderr == 'stderr' and not args.json:
                     try:
                         for line in process.stdout:
                             print(line.decode('utf-8', errors='replace'), end='', flush=True)
@@ -1219,7 +1281,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                             process.stdout, pattern, args, 0, match_count, use_color, "stdout",
                             None, None, first_stdout_time,
                             None, telemetry_collector, execution_id, start_time, source_file_container,
-                            post_match_lines, stdout_log_file, statistics['lines_processed']
+                            post_match_lines, stdout_log_file, statistics['lines_processed'],
+                            success_pattern, match_type
                         )
                     except:
                         pass
@@ -1230,7 +1293,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                             process.stderr, pattern, args, 0, match_count, use_color, "stderr",
                             None, None, first_stderr_time,
                             None, telemetry_collector, execution_id, start_time, source_file_container,
-                            post_match_lines, stderr_log_file, statistics['lines_processed']
+                            post_match_lines, stderr_log_file, statistics['lines_processed'],
+                            success_pattern, match_type
                         )
                     except:
                         pass
@@ -1265,7 +1329,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                     process_stream(process.stderr, pattern, args, 0, match_count, use_color, "stderr",
                                  None, None, first_stderr_time,
                                  None, telemetry_collector, execution_id, start_time, source_file_container,
-                                 post_match_lines, stderr_log_file, statistics['lines_processed'])
+                                 post_match_lines, stderr_log_file, statistics['lines_processed'],
+                                 success_pattern, match_type)
                 except:
                     pass
                 # Drain stdout
@@ -1275,7 +1340,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                         if stdout_log_file:
                             stdout_log_file.write(line.decode('utf-8', errors='replace'))
                             stdout_log_file.flush()
-                        if not args.quiet:
+                        if not args.json:
                             print(line.decode('utf-8', errors='replace'), end='', flush=True)
                 except:
                     pass
@@ -1285,7 +1350,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                     process_stream(process.stdout, pattern, args, 0, match_count, use_color, "stdout",
                                  None, None, first_stdout_time,
                                  None, telemetry_collector, execution_id, start_time, source_file_container,
-                                 post_match_lines, stdout_log_file)
+                                 post_match_lines, stdout_log_file, statistics['lines_processed'],
+                                 success_pattern, match_type)
                 except:
                     pass
                 # Drain stderr (only if we didn't detach)
@@ -1296,7 +1362,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                             if stderr_log_file:
                                 stderr_log_file.write(line.decode('utf-8', errors='replace'))
                                 stderr_log_file.flush()
-                            if not args.quiet:
+                            if not args.json:
                                 print(line.decode('utf-8', errors='replace'), end='', file=sys.stderr, flush=True)
                     except:
                         pass
@@ -1338,13 +1404,36 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                         print(f"\n⏱️  Timeout exceeded", file=sys.stderr)
                 return 2
         
-        # Determine exit code based on match
-        if match_count[0] >= args.max_count:
-            return 0  # Pattern matched - subprocess completed normally
-        elif match_count[0] > 0:
-            return 0  # At least one match found
+        # Determine exit code based on match type
+        # Check if user explicitly specified dual-pattern mode via args
+        using_dual_patterns = bool(getattr(args, 'success_pattern', None) or 
+                                   getattr(args, 'error_pattern', None))
+        
+        if using_dual_patterns:
+            # Dual-pattern mode: success/error patterns specified
+            if match_type[0] == 'success':
+                return 0  # Success pattern matched
+            elif match_type[0] == 'error':
+                return 1  # Error pattern matched
+            elif match_type[0] == 'none':
+                # No match in dual-pattern mode
+                if success_pattern and not error_pattern:
+                    # Success-pattern only: no success found = failure
+                    return 1
+                elif error_pattern and not success_pattern:
+                    # Error-pattern only: no error found = success
+                    return 0
+                else:
+                    # Both patterns specified, neither matched
+                    return 1
         else:
-            return 1  # No match found
+            # Traditional grep mode: use grep exit code convention
+            if match_count[0] >= args.max_count:
+                return 0  # Pattern matched - max count reached
+            elif match_count[0] > 0:
+                return 0  # At least one match found
+            else:
+                return 1  # No match found
             
     except FileNotFoundError:
         print(f"❌ Command not found: {args.command[0]}", file=sys.stderr)
@@ -1414,6 +1503,145 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 os.close(fd)
             except:
                 pass
+
+
+def test_pattern_mode(args, pattern: Pattern, success_pattern: Optional[Pattern] = None, 
+                      error_pattern: Optional[Pattern] = None, use_color: bool = False):
+    """
+    Test pattern mode: Read from stdin, show matches with line numbers and statistics
+    
+    Args:
+        args: Argument namespace
+        pattern: Compiled regex pattern (may be None if using success/error patterns)
+        success_pattern: Compiled success pattern (optional)
+        error_pattern: Compiled error pattern (optional)
+        use_color: Whether to use color output
+        
+    Returns:
+        Exit code: 0 if matches found, 1 if no matches
+    """
+    import sys
+    
+    # Statistics
+    total_lines = 0
+    matched_lines = []  # List of (line_num, line_text, match_type)
+    excluded_lines = 0
+    success_matches = 0
+    error_matches = 0
+    
+    # Read from stdin
+    try:
+        for line_num, line in enumerate(sys.stdin, 1):
+            total_lines += 1
+            line_stripped = line.rstrip('\n\r')
+            
+            # Check exclusion patterns first
+            excluded = False
+            if hasattr(args, 'exclude_patterns') and args.exclude_patterns:
+                for exclude_pattern_str in args.exclude_patterns:
+                    try:
+                        flags = re.IGNORECASE if args.ignore_case else 0
+                        exclude_pattern = re.compile(exclude_pattern_str, flags)
+                        if exclude_pattern.search(line_stripped):
+                            excluded = True
+                            excluded_lines += 1
+                            break
+                    except re.error:
+                        pass
+            
+            if excluded:
+                continue
+            
+            # Check patterns
+            match_type = None
+            matched = False
+            
+            # Check success pattern first (if provided)
+            if success_pattern:
+                if success_pattern.search(line_stripped):
+                    matched = True
+                    match_type = 'success'
+                    success_matches += 1
+            
+            # Check error pattern (if provided and no success match)
+            if not matched and error_pattern:
+                if error_pattern.search(line_stripped):
+                    matched = True
+                    match_type = 'error'
+                    error_matches += 1
+            
+            # Check traditional pattern (if no dual-pattern match)
+            if not matched and pattern and not (success_pattern or error_pattern):
+                if pattern.search(line_stripped):
+                    matched = True
+                    match_type = 'match'
+            
+            # Apply invert match if requested (only for traditional patterns)
+            if args.invert_match and not (success_pattern or error_pattern) and pattern:
+                matched = not matched
+                match_type = 'invert_match' if matched else None
+            
+            # Record match
+            if matched:
+                matched_lines.append((line_num, line_stripped, match_type))
+    
+    except KeyboardInterrupt:
+        pass  # Allow graceful exit with Ctrl+C
+    
+    # Display results
+    print(file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print("Pattern Test Results", file=sys.stderr)
+    print("=" * 70, file=sys.stderr)
+    print(file=sys.stderr)
+    
+    # Display statistics
+    print(f"📊 Statistics:", file=sys.stderr)
+    print(f"   Total lines:     {total_lines:,}", file=sys.stderr)
+    print(f"   Matched lines:   {len(matched_lines):,}", file=sys.stderr)
+    if excluded_lines > 0:
+        print(f"   Excluded lines:  {excluded_lines:,}", file=sys.stderr)
+    if success_pattern and error_pattern:
+        print(f"   Success matches: {success_matches:,}", file=sys.stderr)
+        print(f"   Error matches:   {error_matches:,}", file=sys.stderr)
+    print(file=sys.stderr)
+    
+    # Display matched lines
+    if matched_lines:
+        print(f"✅ Pattern matched {len(matched_lines)} time(s):", file=sys.stderr)
+        print(file=sys.stderr)
+        
+        # Show up to 20 matches (to avoid flooding output)
+        display_limit = 20
+        for i, (line_num, line_text, match_type) in enumerate(matched_lines[:display_limit]):
+            # Color code based on match type
+            if use_color:
+                if match_type == 'success':
+                    prefix = f"\033[32mLine {line_num:6d}\033[0m:"  # Green
+                elif match_type == 'error':
+                    prefix = f"\033[31mLine {line_num:6d}\033[0m:"  # Red
+                else:
+                    prefix = f"\033[33mLine {line_num:6d}\033[0m:"  # Yellow
+            else:
+                prefix = f"Line {line_num:6d}:"
+            
+            print(f"{prefix}  {line_text}", file=sys.stderr)
+        
+        if len(matched_lines) > display_limit:
+            print(file=sys.stderr)
+            print(f"... and {len(matched_lines) - display_limit} more matches", file=sys.stderr)
+        
+        print(file=sys.stderr)
+        print(f"💡 Tip: Use with --exclude to filter false positives", file=sys.stderr)
+        return 0  # Pattern matched
+    else:
+        print(f"❌ No matches found", file=sys.stderr)
+        print(file=sys.stderr)
+        print(f"💡 Tips:", file=sys.stderr)
+        print(f"   - Check pattern syntax (use -i for case-insensitive)", file=sys.stderr)
+        print(f"   - Try a broader pattern", file=sys.stderr)
+        print(f"   - Verify input contains expected text", file=sys.stderr)
+        return 1  # No match
 
 
 def main():
@@ -1515,8 +1743,10 @@ Exit codes (Unix convention, --unix-exit-codes):
     
     parser.add_argument('-a', '--append', action='store_true',
                        help='Append to log files instead of overwriting (like tee -a)')
+    parser.add_argument('-l', '--log', dest='force_logging', action='store_true',
+                       help='Force logging to files (enabled automatically with timeouts)')
     parser.add_argument('--no-auto-log', '--no-log', action='store_true',
-                       help='Disable automatic log file creation (auto-log is enabled by default in command mode)')
+                       help='Disable automatic log file creation')
     parser.add_argument('--auto-tune', action='store_true',
                        help='Automatically select optimal parameters based on telemetry (experimental)')
     parser.add_argument('--color', choices=['always', 'auto', 'never'], default='auto',
@@ -1572,6 +1802,12 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Compress log files with gzip after command completes (like tar -z, rsync -z). Saves 70-90% space.')
     parser.add_argument('-i', '--ignore-case', action='store_true',
                        help='Case-insensitive matching')
+    parser.add_argument('-X', '--exclude', action='append', metavar='PATTERN', dest='exclude_patterns',
+                       help='Exclude lines matching this pattern (can be repeated for multiple exclusions)')
+    parser.add_argument('-s', '--success-pattern', metavar='PATTERN', dest='success_pattern',
+                       help='Pattern indicating successful completion (exits with code 0)')
+    parser.add_argument('-e', '--error-pattern', metavar='PATTERN', dest='error_pattern',
+                       help='Pattern indicating error/failure (exits with code 1)')
     parser.add_argument('-I', '--idle-timeout', type=float, metavar='SECONDS',
                        help='Timeout if no output for N seconds (stall detection)')
     parser.add_argument('-v', '--invert-match', action='store_true',
@@ -1601,6 +1837,8 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Match pattern against stderr only (command mode only)')
     parser.add_argument('--stderr-prefix', dest='fd_prefix', action='store_true',
                        help='Alias for --fd-prefix (for backward compatibility)')
+    parser.add_argument('--test-pattern', action='store_true',
+                       help='Test pattern mode: read from stdin, show matches with line numbers and statistics (does not run a command)')
     parser.add_argument('--stdout', dest='match_stderr', action='store_const', 
                        const='stdout', default='both',
                        help='Match pattern against stdout only (command mode only)')
@@ -1647,7 +1885,8 @@ Exit codes (Unix convention, --unix-exit-codes):
                 if arg in ['-t', '--timeout', '-I', '--idle-timeout', '-F', '--first-output-timeout', 
                           '-m', '--max-count', '--delay-exit', '--fd', '--source-file', '--pid-file',
                           '--file-prefix', '--log-dir', '--profile', '--fd-pattern', '-A', '-B', '-C',
-                          '--delay-exit-after-lines'] or \
+                          '--delay-exit-after-lines', '-s', '--success-pattern', '-e', '--error-pattern',
+                          '-X', '--exclude'] or \
                    (arg.startswith('-') and '=' in arg):
                     # This option takes a value
                     if '=' not in arg:
@@ -1742,11 +1981,16 @@ Exit codes (Unix convention, --unix-exit-codes):
         args.pattern = None
     
     if args.pattern is None:
-        # Pattern not provided - check if timeout options are present
+        # Pattern not provided - check if timeout options are present or dual patterns are used
         has_timeout = args.timeout or args.idle_timeout or args.first_output_timeout
         has_command = len(args.command) > 0
+        has_dual_patterns = bool(getattr(args, 'success_pattern', None) or getattr(args, 'error_pattern', None))
         
-        if has_timeout:
+        if has_dual_patterns:
+            # Using dual-pattern mode (success/error patterns) - set dummy pattern to avoid watch mode
+            args.pattern = '__DUAL_PATTERN_MODE__'
+            original_pattern = '__DUAL_PATTERN_MODE__'
+        elif has_timeout:
             # Timeout provided, pattern optional - use timeout-only mode
             no_pattern_mode = True
             args.pattern = '(?!.*)'  # Negative lookahead that always fails
@@ -1825,8 +2069,11 @@ Exit codes (Unix convention, --unix-exit-codes):
     simple_word = args.pattern and re_module.match(r'^[a-z0-9_-]+$', args.pattern)  # lowercase only
     has_command_args = args.command and len(args.command) > 0
     
+    # Check if using new dual-pattern mode (success/error patterns)
+    has_dual_patterns = bool(getattr(args, 'success_pattern', None) or getattr(args, 'error_pattern', None))
+    
     looks_like_command = (
-        (args.pattern is None and has_command_args) or  # ee -- command
+        (args.pattern is None and has_command_args and not has_dual_patterns) or  # ee -- command (but not with dual patterns)
         args.pattern in common_commands or
         (args.pattern and ('/' in args.pattern or args.pattern.startswith('.'))) or
         (simple_word and has_command_args)  # Lowercase word + args = likely a command, not ERROR/FAIL pattern
@@ -2069,23 +2316,69 @@ Exit codes (Unix convention, --unix-exit-codes):
         # Will determine based on mode later (command vs pipe)
         args.delay_exit = None  # Keep as None for now
     
-    # Compile default pattern
+    # Compile patterns (support both traditional and dual-pattern modes)
     flags = re.IGNORECASE if args.ignore_case else 0
-    try:
-        pattern = compile_pattern(args.pattern, flags, args.perl_regexp, 
-                                 args.word_regexp, args.line_regexp)
-    except re.error as e:
-        print(f"❌ Invalid regex pattern: {e}", file=sys.stderr)
-        record_telemetry(3, 'invalid_pattern')
-        return 3
-    except Exception as e:
-        print(f"❌ Error compiling pattern: {e}", file=sys.stderr)
-        record_telemetry(3, 'pattern_error')
-        return 3
+    pattern = None
+    success_pattern = None
+    error_pattern = None
+    
+    # Check if using new dual-pattern mode
+    if getattr(args, 'success_pattern', None) or getattr(args, 'error_pattern', None):
+        # New dual-pattern mode
+        try:
+            if args.success_pattern:
+                success_pattern = compile_pattern(args.success_pattern, flags, args.perl_regexp,
+                                                 args.word_regexp, args.line_regexp)
+            if args.error_pattern:
+                error_pattern = compile_pattern(args.error_pattern, flags, args.perl_regexp,
+                                               args.word_regexp, args.line_regexp)
+            # Set pattern to error_pattern for backward compatibility with code that expects it
+            # If only success_pattern, use that; if no success or error, use a never-match pattern
+            if error_pattern:
+                pattern = error_pattern
+            elif success_pattern:
+                pattern = success_pattern
+            else:
+                pattern = re.compile('(?!.*)')  # Never matches
+        except re.error as e:
+            print(f"❌ Invalid regex pattern: {e}", file=sys.stderr)
+            record_telemetry(3, 'invalid_pattern')
+            return 3
+        except Exception as e:
+            print(f"❌ Error compiling pattern: {e}", file=sys.stderr)
+            record_telemetry(3, 'pattern_error')
+            return 3
+    elif args.pattern == '__DUAL_PATTERN_MODE__':
+        # Dummy pattern set to avoid watch mode - use never-match pattern
+        pattern = re.compile('(?!.*)')  # Never matches
+    else:
+        # Traditional mode: single pattern
+        try:
+            pattern = compile_pattern(args.pattern, flags, args.perl_regexp,
+                                     args.word_regexp, args.line_regexp)
+        except re.error as e:
+            print(f"❌ Invalid regex pattern: {e}", file=sys.stderr)
+            record_telemetry(3, 'invalid_pattern')
+            return 3
+        except Exception as e:
+            print(f"❌ Error compiling pattern: {e}", file=sys.stderr)
+            record_telemetry(3, 'pattern_error')
+            return 3
     
     # Determine if we should colorize
     use_color = (args.color == 'always' or 
                  (args.color == 'auto' and sys.stdout.isatty()))
+    
+    # Check if test pattern mode is requested
+    if args.test_pattern:
+        # Test pattern mode: read from stdin, show matches and statistics
+        if len(args.command) > 0:
+            print("❌ Error: --test-pattern mode reads from stdin, cannot run a command", file=sys.stderr)
+            return 3
+        
+        # Run test pattern mode
+        exit_code = test_pattern_mode(args, pattern, success_pattern, error_pattern, use_color)
+        return map_exit_code(exit_code, args.unix_exit_codes)
     
     # Determine mode: command mode or pipe mode
     # Command mode takes precedence if a command is provided
@@ -2096,7 +2389,11 @@ Exit codes (Unix convention, --unix-exit-codes):
         if not is_command_mode:
             print("❌ Error: --detach requires command mode (not pipe mode)", file=sys.stderr)
             return 3
-        if not args.pattern:
+        # Check if any pattern is provided (traditional, success, or error)
+        has_any_pattern = (args.pattern or 
+                          getattr(args, 'success_pattern', None) or
+                          getattr(args, 'error_pattern', None))
+        if not has_any_pattern:
             print("❌ Error: --detach requires a pattern", file=sys.stderr)
             return 3
     
@@ -2114,13 +2411,19 @@ Exit codes (Unix convention, --unix-exit-codes):
     # Only allow pipe mode if no command is specified
     if is_command_mode:
         # Warn if trying to pipe data while using command mode
-        # Check if there's actually data being piped (not just running in a terminal)
-        try:
-            import select
-            if not sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.0)[0]:
-                print("⚠️  Warning: Ignoring pipe input - using command mode", file=sys.stderr)
-        except:
-            pass  # Ignore if select not available
+        # Only warn if quiet is not set AND there's actual data being piped
+        if not args.quiet:
+            try:
+                import select
+                # More robust check: stdin is a pipe AND has data AND not from a TTY
+                if not sys.stdin.isatty():
+                    readable, _, _ = select.select([sys.stdin], [], [], 0.0)
+                    if readable:
+                        # Verify it's actually a pipe with data, not just a closed/redirected stdin
+                        # In practice, this warning causes more confusion than help, so skip it
+                        pass  # Don't warn - it's usually a false positive in various environments
+            except:
+                pass  # Ignore if select not available
     
     # Set up timeout if requested
     if args.timeout:
@@ -2135,7 +2438,7 @@ Exit codes (Unix convention, --unix-exit-codes):
                 args.delay_exit = 10  # 10 seconds default for command mode
             
             exit_code = run_command_mode(args, pattern, use_color, telemetry_collector, 
-                                        execution_id, telemetry_start_time, source_file)
+                                        execution_id, telemetry_start_time, source_file, success_pattern, error_pattern)
             
             # Cancel timeout on completion
             if args.timeout:
@@ -2241,11 +2544,13 @@ Exit codes (Unix convention, --unix-exit-codes):
                 output_timeout_thread = threading.Thread(target=check_output_timeouts, daemon=True)
                 output_timeout_thread.start()
             
+            match_type = ['none']  # For pipe mode
             lines_processed = process_stream(sys.stdin, pattern, args, 0, match_count, use_color, 
                                             "stdin", last_output_time, first_output_seen, None,
                                             match_timestamp,
                                             telemetry_collector, execution_id, telemetry_start_time, source_file_container,
-                                            post_match_lines)
+                                            post_match_lines, None, None, 
+                                            success_pattern=None, match_type=match_type)
             
             # Stop monitoring thread
             stop_reading[0] = True

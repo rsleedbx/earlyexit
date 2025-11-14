@@ -270,32 +270,67 @@ def setup_auto_logging(args, command: list, is_command_mode: bool = True):
     """
     Setup automatic logging based on arguments
     
+    Smart auto-logging rules:
+    - Pipe mode: Never auto-log (unless --log or --file-prefix)
+    - Command mode + --log: Always log
+    - Command mode + --no-auto-log: Never log
+    - Command mode + timeout: Auto-log (monitoring use case)
+    - Command mode + no timeout: No auto-log (simple filtering)
+    
     Args:
         args: Parsed arguments
         command: Command list
-        is_command_mode: If True, auto-log is enabled by default (can be disabled with --no-auto-log)
+        is_command_mode: If True, applies command mode rules
     
     Returns:
         Tuple of (stdout_log_path, stderr_log_path) or (None, None) if disabled
     """
-    # Check if logging is disabled
+    # Check if logging is explicitly disabled
     if hasattr(args, 'no_auto_log') and args.no_auto_log:
         return None, None
     
-    # In command mode, auto-log is enabled by default unless disabled
-    # In pipe mode, auto-log is disabled by default unless --file-prefix is provided
+    # Check if logging is explicitly enabled
+    force_logging = getattr(args, 'force_logging', False)
+    
+    # Check if user provided explicit prefix
+    has_explicit_prefix = bool(args.file_prefix)
+    
+    # Check if any timeout is configured (indicates monitoring use case)
+    has_timeout = any([
+        getattr(args, 'timeout', None),
+        getattr(args, 'idle_timeout', None),
+        getattr(args, 'first_output_timeout', None)
+    ])
+    
+    # Determine if we should log
+    should_log = False
+    
+    if force_logging or has_explicit_prefix:
+        # Explicit logging requested
+        should_log = True
+    elif is_command_mode and has_timeout:
+        # Command mode with timeout = monitoring use case = auto-log
+        should_log = True
+    elif not is_command_mode and has_explicit_prefix:
+        # Pipe mode with explicit prefix
+        should_log = True
+    else:
+        # Simple filtering use case - no logging
+        should_log = False
+    
+    if not should_log:
+        return None, None
+    
+    # Determine log file prefix
     if args.file_prefix:
         # User explicitly provided prefix
         prefix = args.file_prefix
-    elif is_command_mode:
-        # Auto-generate from command (default in command mode)
+    else:
+        # Auto-generate from command
         log_dir = getattr(args, 'log_dir', '/tmp')
         append_mode = getattr(args, 'append', False)
         # Pass append flag so we don't add PID when appending (tee -a compat)
         prefix = generate_log_prefix(command, log_dir, append=append_mode)
-    else:
-        # Pipe mode - no auto-log unless explicitly requested
-        return None, None
     
     # Create log file paths
     append_mode = getattr(args, 'append', False)
