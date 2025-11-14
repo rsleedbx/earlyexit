@@ -173,7 +173,7 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 - ✅ **Success/Error pattern matching** - Early exit on success OR error
 - 🚫 **Pattern exclusions** - Filter out false positives
 - 🧪 **Pattern testing mode** - Test patterns against logs without running commands
-- 🔁 **Stuck/no-progress detection** - Auto-exit when same line repeats (with timestamp normalization)
+- 🔁 **Stuck/no-progress detection** - Auto-exit when same line repeats (with timestamp normalization and pattern extraction)
 - ⏸️ **Stderr idle exit** - Auto-exit when error messages finish (stderr goes quiet)
 
 ### Unique Capabilities
@@ -816,6 +816,79 @@ rble-308   -    0        0        0        | N/A             N/A             -  
 **Difference from idle timeout:**
 - `-I`/`--idle-timeout`: No **new** output (command silent)
 - `--max-repeat`: Command producing output but **not progressing** (same line repeating)
+
+#### Advanced: `--stuck-pattern` for Partial Line Matching
+
+**Problem:** Output has **changing parts** (counters, timestamps) but a **stuck status indicator**:
+
+```
+# Numbers change (progress counters), but status is STUCK:
+rble-308   13   12  15   6   | RUNNING  IDLE  2  N/A  [10:35:24]
+rble-308   13   14  16   7   | RUNNING  IDLE  2  N/A  [10:35:31]
+rble-308   13   15  19   7   | RUNNING  IDLE  2  N/A  [10:35:40]
+rble-308   13   17  20   8   | RUNNING  IDLE  2  N/A  [10:35:47]
+
+# ❌ --stuck-ignore-timestamps won't detect this (numbers change!)
+# ✅ --stuck-pattern extracts ONLY the status part to watch
+```
+
+**Solution: Watch only the key indicator**:
+
+```bash
+# Extract and watch only "RUNNING IDLE 2 N/A"
+ee --max-repeat 3 --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' 'RUNNING' -- command
+
+# Output:
+# 🔁 Stuck detected: Same line repeated 3 times (watching pattern)
+#    Watched part: RUNNING IDLE 2 N/A    ← Only this part checked
+#    Full line: rble-308 13 15 19 7 | RUNNING IDLE 2 N/A [10:35:40]
+```
+
+**How it works:**
+1. `--stuck-pattern REGEX` extracts a specific part of each line
+2. Only the **extracted part** is compared for repetition
+3. Changing counters/timestamps outside the pattern are ignored
+
+**How to identify your stuck pattern:**
+
+| Question | Answer | Action |
+|----------|--------|--------|
+| What SHOULD change? | Counters, timestamps, IDs | Ignore these |
+| What SHOULDN'T change? | Status, state, error message | **Watch this** |
+| What indicates stuck? | Status stays same despite counters | Extract status with regex |
+
+**Real-world examples:**
+
+```bash
+# Database sync: watch sync state, ignore row counts
+ee --stuck-pattern 'state:\s*\w+' --max-repeat 5 'ERROR' -- db-sync
+
+# Kubernetes: watch pod status, ignore timestamps
+ee --stuck-pattern 'Status:\s*Pending' --max-repeat 8 'Running' -- kubectl get pods -w
+
+# Build system: watch current task, ignore file counts
+ee --stuck-pattern 'Building:\s*\S+' --max-repeat 10 'Completed' -- build-tool
+
+# API polling: watch response status, ignore request IDs
+ee --stuck-pattern '"status":\s*"\w+"' --max-repeat 5 'success' -- api-monitor
+```
+
+**Combining all detection methods:**
+
+```bash
+# Comprehensive: all early-exit detection enabled
+ee -t 300 -I 60 \
+  --max-repeat 8 --stuck-pattern 'STATE:\s*\w+' \
+  --stderr-idle-exit 2 \
+  --progress --unix-exit-codes \
+  -- command
+
+# Exit early on:
+# - Timeout (-t 300): 5 minutes max
+# - Idle (-I 60): 60 seconds no output
+# - Stuck (--max-repeat 8): STATE repeats 8 times
+# - Stderr idle (--stderr-idle-exit 2): errors finish, 2s idle
+```
 
 ---
 

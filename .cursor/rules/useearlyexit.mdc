@@ -160,6 +160,9 @@ ee -t 300 -I 60 'ERROR|FAIL' -- command
 # With stuck detection (repeating output)
 ee -t 300 --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
 
+# With stuck pattern extraction (changing counters, stuck status)
+ee -t 300 --max-repeat 5 --stuck-pattern 'STATUS_REGEX' 'ERROR' -- command
+
 # With stderr idle exit (Python/Node errors that hang)
 ee -t 300 --stderr-idle-exit 1 'SUCCESS|Completed' -- command
 
@@ -438,6 +441,85 @@ IF command contains (--output json|--format=json|--format json)
    OR uses (databricks|aws|gcloud|az|kubectl.*-o json)
 THEN add -q flag to ee
 ```
+
+## 🎯 Identifying Stuck Patterns (AI Pattern Analysis)
+
+When monitoring commands, analyze output to identify what changes vs. what stays the same.
+
+### The Problem: Changing Counters + Stuck Status
+
+```
+# Output like this:
+rble-308   13   12  15   6   | RUNNING  IDLE  2  N/A  [10:35:24]
+rble-308   13   14  16   7   | RUNNING  IDLE  2  N/A  [10:35:31]
+rble-308   13   15  19   7   | RUNNING  IDLE  2  N/A  [10:35:40]
+               ^^  ^^   ^           ^^^^  ^^^^          
+            CHANGING            NOT CHANGING (STUCK!)
+```
+
+### AI Decision Process for Stuck Detection
+
+**Step 1: Analyze the output structure**
+
+```
+Question: What parts change between lines?
+Answer: Left side numbers (12→14→15), timestamp
+Action: These are progress indicators, IGNORE them
+
+Question: What parts DON'T change?
+Answer: "RUNNING IDLE 2 N/A" (status indicator)
+Action: This is the STUCK indicator, WATCH this!
+```
+
+**Step 2: Choose the right detection method**
+
+| Output Pattern | Detection Method | Example |
+|----------------|------------------|---------|
+| Entire line repeats (including timestamps) | `--max-repeat N` | Logs with no timestamps |
+| Line repeats except timestamps | `--max-repeat N --stuck-ignore-timestamps` | Most log files |
+| Line has changing counters + stuck status | `--max-repeat N --stuck-pattern 'REGEX'` | Database sync, job monitors |
+
+**Step 3: Extract the stuck indicator**
+
+```bash
+# Identify the repeating part (what shouldn't change when progressing)
+# Example: "RUNNING IDLE 2 N/A"
+
+# Create regex to match ONLY that part
+STUCK_PATTERN='RUNNING\s+IDLE\s+\d+\s+N/A'
+
+# Use it:
+ee --max-repeat 5 --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' 'ERROR' -- command
+```
+
+### Real-World Stuck Pattern Examples
+
+```bash
+# Database sync stuck in "syncing" state despite row counts changing
+ee --stuck-pattern 'state:\s*syncing' --max-repeat 8 'ERROR' -- db-sync
+
+# Kubernetes pod stuck in "Pending" despite timestamps changing
+ee --stuck-pattern 'Status:\s*Pending' --max-repeat 10 'Running' -- kubectl get pods -w
+
+# Build stuck on same file despite progress counters
+ee --stuck-pattern 'Compiling:\s*\S+\.rs' --max-repeat 5 'Finished' -- cargo build
+
+# API responses stuck in same state despite request IDs changing
+ee --stuck-pattern '"status":\s*"pending"' --max-repeat 8 'success' -- api-poll
+
+# Job monitor stuck (Mist example - the original problem!)
+ee --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' --max-repeat 5 'SUCCESS' -- mist dml monitor
+```
+
+### When to Use Each Feature
+
+| Feature | Use Case | AI Prompt |
+|---------|----------|-----------|
+| `--max-repeat 5` | Exact line repeats | "Same error 5 times" |
+| `--stuck-ignore-timestamps` | Line repeats except timestamps | "Same status, timestamp changes" |
+| `--stuck-pattern 'REGEX'` | Counters change, status stuck | "Progress counters change but status doesn't" |
+| `--stderr-idle-exit 2` | Errors printed, then hangs | "Error message appears, then silent" |
+| `-I 60` | No output at all | "Command produces no output for 60s" |
 
 ## Summary: AI Agent Checklist (Non-Interactive Mode)
 

@@ -47,21 +47,38 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Timeout exceeded")
 
 
-def normalize_line_for_comparison(line: str, strip_timestamps: bool = True) -> str:
+def normalize_line_for_comparison(line: str, strip_timestamps: bool = True, stuck_pattern: str = None) -> str:
     """
     Normalize a line for comparison to detect stuck/repeated output.
     
     Args:
         line: Input line to normalize
         strip_timestamps: If True, remove common timestamp patterns
+        stuck_pattern: If provided, extract only the part matching this regex
     
     Returns:
-        Normalized line with timestamps removed and whitespace collapsed
+        Normalized line with timestamps removed and whitespace collapsed,
+        or extracted pattern match if stuck_pattern is provided
     """
+    import re
+    
+    # If stuck_pattern provided, extract and return that part only
+    if stuck_pattern:
+        try:
+            match = re.search(stuck_pattern, line)
+            if match:
+                # Return the matched part (what we're watching for repetition)
+                return match.group(0).strip()
+            else:
+                # Pattern didn't match, use full line
+                pass
+        except re.error:
+            # Invalid regex, fall through to normal processing
+            pass
+    
+    # Normal processing
     if not strip_timestamps:
         return line.strip()
-    
-    import re
     
     # Strip common timestamp patterns
     normalized = line
@@ -457,6 +474,7 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     last_normalized_line = None
     max_repeat = getattr(args, 'max_repeat', None)
     strip_timestamps = getattr(args, 'stuck_ignore_timestamps', False)
+    stuck_pattern = getattr(args, 'stuck_pattern', None)
     
     # Context buffer for capturing lines before matches (like grep -B)
     context_buffer = []
@@ -506,16 +524,23 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
             # Stuck detection: check if line is repeating
             if max_repeat:
                 # Normalize line for comparison
-                normalized_line = normalize_line_for_comparison(line_stripped, strip_timestamps)
+                normalized_line = normalize_line_for_comparison(line_stripped, strip_timestamps, stuck_pattern)
                 
                 if normalized_line == last_normalized_line and normalized_line:
                     repeat_count += 1
                     if repeat_count >= max_repeat:
                         # Stuck detected!
                         if not args.quiet:
-                            timestamp_msg = " (ignoring timestamps)" if strip_timestamps else ""
-                            print(f"\n🔁 Stuck detected: Same line repeated {repeat_count} times{timestamp_msg}", file=sys.stderr)
-                            print(f"   Repeated line: {line_stripped}", file=sys.stderr)
+                            detection_msg = []
+                            if stuck_pattern:
+                                detection_msg.append("watching pattern")
+                            if strip_timestamps:
+                                detection_msg.append("ignoring timestamps")
+                            context = f" ({', '.join(detection_msg)})" if detection_msg else ""
+                            print(f"\n🔁 Stuck detected: Same line repeated {repeat_count} times{context}", file=sys.stderr)
+                            if stuck_pattern:
+                                print(f"   Watched part: {normalized_line}", file=sys.stderr)
+                            print(f"   Full line: {line_stripped}", file=sys.stderr)
                         # Set stuck flag and break
                         if stuck_detected is not None:
                             stuck_detected[0] = True
@@ -2038,6 +2063,10 @@ Exit codes (Unix convention, --unix-exit-codes):
     parser.add_argument('--stuck-ignore-timestamps', action='store_true',
                        help='Strip common timestamp patterns when checking for repeated lines (requires --max-repeat). '
                             'Normalizes timestamps like [HH:MM:SS], YYYY-MM-DD, etc.')
+    parser.add_argument('--stuck-pattern', metavar='REGEX',
+                       help='Extract specific part of line to check for repeating (requires --max-repeat). '
+                            'Example: "RUNNING\\s+IDLE\\s+\\d+\\s+N/A" watches only status indicators. '
+                            'If pattern matches, uses the match for comparison. If not, uses full line.')
     parser.add_argument('--stderr-idle-exit', type=float, metavar='SECONDS',
                        help='Exit after stderr has been idle for N seconds (after seeing stderr output). '
                             'Useful for detecting when error messages have finished printing. '
