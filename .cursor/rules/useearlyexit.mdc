@@ -137,16 +137,40 @@ ee -t 120 --stderr-idle-exit 2 --max-repeat 8 \
 
 ## 🤖 AI AGENT DECISION TREE (Non-Interactive Mode)
 
-**Step 1: Choose pattern mode**
+**Step 1: Choose testing approach (FUNDAMENTAL)**
 
 ```
-Do you know what success looks like?
-├─ YES → Use success + error patterns
-│         ee --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+Do you know what OUTPUT to expect?
+├─ YES (you wrote/control the code) → Use ALLOWLIST (--expect)
+│  ├─ Perfect for:
+│  │  • Code you just wrote (AI-generated or human)
+│  │  • Scripts you're testing/debugging
+│  │  • Deployment scripts
+│  │  • Integration tests
+│  │  • CI/CD health checks
+│  │
+│  └─ Pattern:
+│     ee --expect 'Step 1 complete' \
+│        --expect 'Step 2 complete' \
+│        --expect 'Done' \
+│        --expect-all \
+│        -- command
 │
-└─ NO → Use traditional error pattern
-          ee 'ERROR|FAIL|Exception' -- command
+└─ NO (third-party/unknown behavior) → Use BLOCKLIST (traditional patterns)
+   ├─ Perfect for:
+   │  • Third-party tools (Terraform, Docker, kubectl)
+   │  • Existing services (mist, database servers)
+   │  • Black box systems
+   │  • Production monitoring
+   │
+   ├─ If you know success patterns:
+   │  ee --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+   │
+   └─ If you only know error patterns:
+      ee 'ERROR|FAIL|Exception' -- command
 ```
+
+**Key principle:** When you control the code, DEFINE what's normal (allowlist). When you don't control it, WATCH for problems (blocklist).
 
 **Step 2: Add timeouts and detection**
 
@@ -551,8 +575,11 @@ ee --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' --max-repeat 5 'SUCCESS' -- mist
 ### 🎯 Quick Reference for Common Cases
 
 ```bash
-# Monitoring command (default pattern when unsure)
-ee -t 300 'ERROR|FAIL' -- command
+# Testing code you wrote (ALLOWLIST - you know what to expect)
+ee --expect 'Step 1' --expect 'Step 2' --expect 'Done' --expect-all -- your-script.sh
+
+# Monitoring existing service (BLOCKLIST - watch for errors)
+ee -t 300 'ERROR|FAIL' -- existing-command
 
 # Python/Node.js errors that hang
 ee -t 300 --stderr-idle-exit 1 'SUCCESS' -- command
@@ -560,8 +587,12 @@ ee -t 300 --stderr-idle-exit 1 'SUCCESS' -- command
 # Repeating output (stuck detection)
 ee -t 300 --max-repeat 8 --stuck-ignore-timestamps 'ERROR' -- command
 
-# Success detection
+# Success detection (for services with clear success/error states)
 ee -t 300 --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+
+# Comprehensive (code you control)
+ee -t 300 --expect 'Started' --expect 'Done' --expect-all \
+  --unexpected 'ERROR|FAIL' -- your-deployment.sh
 
 # Comprehensive (when you need everything)
 ee -t 300 -I 60 --max-repeat 8 --stuck-ignore-timestamps \

@@ -175,6 +175,8 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 - 🧪 **Pattern testing mode** - Test patterns against logs without running commands
 - 🔁 **Advanced stuck detection** - 4 types: repeating lines, stuck status, no progress (counters), state regressions
 - ⏸️ **Stderr idle exit** - Auto-exit when error messages finish (stderr goes quiet)
+- ✅ **Expect/Allowlist mode** - Define expected output, catch any deviation (perfect for code you control)
+- ⛔ **Unexpected/Blocklist mode** - Define forbidden patterns (dual allowlist+blocklist support)
 
 ### Unique Capabilities
 - 🔥 **Stall detection** - Idle timeout (no new output)
@@ -310,7 +312,132 @@ ee --success-pattern 'successfully rolled out' \
    -- kubectl rollout status deployment/myapp
 ```
 
-[**See 14 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
+[**See 15 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
+
+---
+
+## Two Testing Approaches: Know What to Expect?
+
+**The fundamental question:** Do you know what output to expect, or only what errors look like?
+
+### Approach 1: Allowlist (You Control the Output) ✅
+
+**Use when:** You wrote the code, you know exactly what should happen.
+
+```bash
+# You know EXACTLY what your script should output
+ee --expect 'Starting process' \
+   --expect 'Step 1 complete' \
+   --expect 'Step 2 complete' \
+   --expect 'Done' \
+   --expect-all \  # Must see ALL patterns
+   -- python your_script.py
+
+# Exit codes:
+# 0 = All expected patterns seen, no unexpected output
+# 5 = Unexpected output detected (caught a bug!)
+# 6 = Expected pattern missing (caught a bug!)
+```
+
+**Perfect for:**
+- ✅ Scripts you just wrote (AI or human)
+- ✅ Code you're testing/debugging
+- ✅ Services where you control all log messages
+- ✅ Integration tests with known outputs
+- ✅ CI/CD health checks
+
+**Why it works:** You define what's "normal" - anything else is automatically suspect!
+
+### Approach 2: Blocklist (Complex/Unknown Behavior) ❌
+
+**Use when:** You don't know all possible outputs, only what's bad.
+
+```bash
+# Monitor existing service - watch for known problems
+ee 'ERROR|FAIL|Exception|Connection refused' -- java -jar legacy-service.jar
+
+# Exit codes:
+# 0 = Error pattern found (detected a problem!)
+# 1 = No errors found (grep convention)
+```
+
+**Perfect for:**
+- ✅ Third-party tools (Terraform, Docker, kubectl)
+- ✅ Legacy systems (unknown normal behavior)
+- ✅ Black box services
+- ✅ Complex systems with varying output
+- ✅ Production monitoring
+
+**Why it works:** Too many possible "normal" outputs to enumerate, easier to list problems!
+
+### Approach 3: Dual Mode (Mixed) 🔀
+
+**Use when:** You control some output but integrate with external systems.
+
+```bash
+# Your code calls external API
+ee --expect 'Calling payment API' \
+   --expect 'Payment processed' \
+   --unexpected 'ERROR|500|timeout' \  # Known external problems
+   --expect-all \
+   -- python your_payment_script.py
+```
+
+**Perfect for:**
+- ✅ Wrappers around third-party services
+- ✅ Integration code
+- ✅ Partially controlled environments
+
+### Quick Decision Tree
+
+```
+Do you know what output to expect?
+├─ YES → Use --expect (allowlist)
+│  └─ Strict testing, catches any deviation
+│     ee --expect 'pattern1' --expect 'pattern2' --expect-all -- command
+│
+└─ NO → Use traditional patterns (blocklist)
+   └─ Flexible monitoring, catches known problems
+      ee 'ERROR|FAIL|Exception' -- command
+
+├─ MIXED → Use both
+   └─ ee --expect 'your_output' --unexpected 'error_pattern' -- command
+```
+
+### Example: You Write a Deployment Script
+
+```bash
+# Your deployment script
+cat > deploy.sh << 'EOF'
+#!/bin/bash
+echo "Starting deployment"
+kubectl apply -f app.yaml
+echo "Waiting for pods"
+kubectl wait --for=condition=ready pod -l app=myapp
+echo "Deployment complete"
+EOF
+
+# Test with allowlist (you know EXACTLY what should print)
+ee --expect 'Starting deployment' \
+   --expect 'Waiting for pods' \
+   --expect 'Deployment complete' \
+   --expect-all \
+   -- bash deploy.sh
+
+# If script has a bug and doesn't print "Deployment complete" → EXIT 6
+# If kubectl prints unexpected error → EXIT 5
+# Perfect for catching bugs immediately!
+```
+
+### Example: Monitor Existing Service
+
+```bash
+# Existing Java service (you don't know all possible outputs)
+ee 'ERROR|FATAL|Exception|OutOfMemory' -- java -jar service.jar
+
+# If any error pattern appears → EXIT 0 (pattern matched)
+# Flexible: service can print anything normal, only flags problems
+```
 
 ---
 
@@ -1040,10 +1167,114 @@ ee --stderr-idle-exit 1 'SUCCESS' -- mist dml monitor --id xyz
 
 ---
 
+### Expect/Allowlist Mode (For Code You Control)
+
+Define what you EXPECT to see - anything else is unexpected!
+
+**Perfect for:** Scripts you wrote, tests you control, code where you know exact expected output.
+
+#### Option 1: Basic Allowlist
+
+```bash
+# Define expected patterns
+ee --expect 'Starting process' \
+   --expect 'Processing item \d+' \
+   --expect 'Done' \
+   -- python your_script.py
+
+# If script prints something unexpected → immediate exit!
+```
+
+#### Option 2: Strict Mode (`--expect-only`)
+
+EVERY line must match an expect pattern:
+
+```bash
+# Strict: no unexpected output allowed
+ee --expect 'INFO' --expect 'DEBUG' --expect-only 'INFO' -- command
+
+# Any line not matching INFO or DEBUG → EXIT 5
+```
+
+#### Option 3: Coverage Mode (`--expect-all`)
+
+All expected patterns MUST be seen:
+
+```bash
+# Must see all 3 patterns
+ee --expect 'Started' \
+   --expect 'Processed' \
+   --expect 'Completed' \
+   --expect-all \
+   -- ./deployment_script.sh
+
+# If 'Completed' never appears → EXIT 6
+```
+
+#### Option 4: Dual Mode (Allowlist + Blocklist)
+
+Combine expected patterns with unexpected patterns:
+
+```bash
+# Define both what should and shouldn't appear
+ee --expect 'API call successful' \
+   --expect 'Response received' \
+   --unexpected 'ERROR' \
+   --unexpected '500' \
+   --expect-all \
+   -- python api_wrapper.py
+
+# Exit 5 if: unexpected output OR forbidden pattern
+# Exit 6 if: expected pattern missing
+```
+
+#### Termination Control (`--on-unexpected`)
+
+```bash
+# exit (default): Immediate termination on unexpected
+ee --expect 'INFO' --on-unexpected exit -- command
+
+# error: Collect unexpected lines, report at end
+ee --expect 'INFO' --on-unexpected error -- command
+
+# warn: Print warnings but continue
+ee --expect 'INFO' --on-unexpected warn -- command
+```
+
+**Real-world example:**
+
+```bash
+# Test your deployment script
+ee --expect 'Creating namespace' \
+   --expect 'Applying manifests' \
+   --expect 'Pods ready' \
+   --expect 'Health check passed' \
+   --expect 'Deployment complete' \
+   --unexpected 'ERROR|FAIL|CrashLoopBackOff' \
+   --expect-all \
+   -- ./deploy.sh
+
+# Catches bugs immediately:
+# - Missing step (expected pattern not seen)
+# - Unexpected error (unexpected pattern detected)
+# - Script output changed (unexpected line printed)
+```
+
+**Exit codes:**
+- `0` = All expected seen, no unexpected
+- `5` = Unexpected output detected OR forbidden pattern seen
+- `6` = Coverage failed (expected pattern missing)
+
+**Why this works:**
+
+When you control the code, you know EXACTLY what should happen. Define success completely, and anything else is automatically a failure!
+
+---
+
 ## Documentation
 
 ### 📖 User Guides
-- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 14 scenarios where `ee` excels over `grep`
+- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 15 scenarios where `ee` excels over `grep`
 - [**Complete User Guide**](docs/USER_GUIDE.md) - Comprehensive usage examples
 - [**Exit Codes Reference**](docs/EXIT_CODES.md) - All exit codes explained (including detach mode)
 - [Pattern Matching Reference](docs/REGEX_REFERENCE.md) - Regex patterns & examples
