@@ -658,11 +658,157 @@ GitHub Actions workflow monitoring:
 
 ---
 
+## Problem 11: Pattern Development Without Logs
+
+### ❌ The Problem (timeout without logs)
+
+You run a command with timeout but forget to save logs. Now you can't test patterns:
+
+```bash
+# What was run (no logs saved)
+timeout 60 mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15 2>&1
+
+# Output scrolls by... then it's gone forever
+# Can't test patterns later
+# Must guess patterns and try again
+```
+
+**Problems:**
+- ❌ Output is lost after command completes
+- ❌ Can't iterate on patterns
+- ❌ Must re-run command to test new patterns
+- ❌ Wastes time on trial-and-error
+
+**Workaround:**
+```bash
+# Must remember to save logs manually
+timeout 60 mist dml monitor 2>&1 | tee /tmp/monitor.log
+
+# But still has the block buffering problem (silent for 60 seconds)!
+```
+
+### ✅ The Solution (ee with auto-logging)
+
+`ee` **automatically saves logs** when you use a timeout, enabling the **Exploration → Analysis → Production** workflow:
+
+#### Step 1: Exploration (First Run)
+
+```bash
+# Don't know what pattern to watch for yet - just explore
+ee -t 60 'ERROR|success|completed' -- \
+  mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Output:
+# 📝 Logging to:
+#    stdout: /tmp/ee-mist_dml_monitor-12345.log
+#    stderr: /tmp/ee-mist_dml_monitor-12345.errlog
+# 
+# Starting monitor...
+# Checking status...
+# ERROR: Connection timeout
+# Retrying... (attempt 1)
+# Retrying... (attempt 2)
+# Retrying... (attempt 3)
+# ERROR: Max retries exceeded
+# 
+# ⏱️  Timeout: No pattern matched in 60 seconds
+```
+
+#### Step 2: Analysis (Pattern Testing)
+
+```bash
+# Now analyze the saved logs to understand what happened
+cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' --test-pattern
+
+# Output:
+# 📊 Statistics:
+#    Total lines:     234
+#    Matched lines:   5
+# 
+# ✅ Pattern matched 5 time(s):
+# Line  12: ERROR: Connection timeout
+# Line  45: error: retry attempt 1
+# Line  67: error: retry attempt 2
+# Line  89: error: retry attempt 3
+# Line 234: ERROR: Max retries exceeded
+```
+
+#### Step 3: Refinement (Exclude False Positives)
+
+```bash
+# Retries are expected (not real errors) - exclude them
+cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' \
+  --test-pattern \
+  --exclude 'retry attempt'
+
+# Output:
+# 📊 Statistics:
+#    Total lines:     234
+#    Matched lines:   2
+#    Excluded lines:  3
+# 
+# ✅ Pattern matched 2 time(s):
+# Line  12: ERROR: Connection timeout
+# Line 234: ERROR: Max retries exceeded
+```
+
+#### Step 4: Production (Optimized Pattern)
+
+```bash
+# Now we know exactly what to watch for
+ee -t 60 \
+  --success-pattern 'Monitor started successfully' \
+  --error-pattern 'Connection timeout|Max retries exceeded' \
+  --exclude 'retry attempt' \
+  -- mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Exits immediately when success or real error is detected
+# Logs are still saved for debugging
+```
+
+**Why ee wins:**
+- ✅ **Auto-logging**: Logs saved automatically with timeout
+- ✅ **Pattern testing**: Test against saved logs (no re-runs)
+- ✅ **Rapid iteration**: Refine patterns in seconds
+- ✅ **Production ready**: Deploy optimized patterns with confidence
+- ✅ **Time saved**: Hours of trial-and-error → Minutes of analysis
+
+**Comparison:**
+
+| Aspect | `timeout` | `ee` with timeout |
+|--------|-----------|-------------------|
+| **Logs saved?** | ❌ No (unless you add `tee`) | ✅ Yes (automatic) |
+| **Pattern testing?** | ❌ Can't (no logs) | ✅ Yes (against saved logs) |
+| **Real-time output?** | ❌ No (block buffering) | ✅ Yes (unbuffered) |
+| **Early exit?** | ❌ No (waits full timeout) | ✅ Yes (on pattern match) |
+| **Log location shown?** | ❌ No | ✅ Yes (printed at start) |
+| **Iteration time** | ⭐ Must re-run command each time | ⭐⭐⭐⭐⭐ Test instantly against logs |
+
+**Smart Auto-Logging Rules:**
+- Command mode **with** timeout → Auto-logging **enabled** (you probably want logs)
+- Command mode **without** timeout → Auto-logging **disabled** (keep it simple)
+- Explicit `--log` or `--file-prefix` → Always logs
+
+**Real-world workflow:**
+
+```
+Without ee:
+Run → Output lost → Guess pattern → Run again → Wrong → Guess again → Repeat...
+(Hours of trial-and-error)
+
+With ee:
+Run → Logs auto-saved → Test patterns → Refine → Deploy
+(Minutes to production-ready)
+```
+
+---
+
 ## Summary: When to Use `ee` Over `grep`
 
 | Scenario | Problem | ee Advantage |
 |----------|---------|--------------|
 | **`timeout N cmd 2>&1`** | ⭐⭐⭐⭐⭐ No output for entire timeout! | Automatic unbuffering + real-time output |
+| **Pattern development** | ⭐⭐⭐⭐⭐ Lost output, trial-and-error | Auto-logging + pattern testing |
 | **False positives in logs** | ⭐⭐⭐ Complex pipes | `--exclude` flag |
 | **Success OR error patterns** | ⭐⭐⭐⭐⭐ Race conditions | `--success-pattern` + `--error-pattern` |
 | **Stall/hang detection** | ⭐⭐⭐⭐⭐ Complex shell scripts | `-I` idle timeout |

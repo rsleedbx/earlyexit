@@ -291,7 +291,7 @@ ee --success-pattern 'successfully rolled out' \
    -- kubectl rollout status deployment/myapp
 ```
 
-[**See 10 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
+[**See 11 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
 
 ---
 
@@ -732,7 +732,7 @@ cat deploy.log | ee \
 ## Documentation
 
 ### 📖 User Guides
-- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 10 scenarios where `ee` excels over `grep`
+- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 11 scenarios where `ee` excels over `grep`
 - [**Complete User Guide**](docs/USER_GUIDE.md) - Comprehensive usage examples
 - [**Exit Codes Reference**](docs/EXIT_CODES.md) - All exit codes explained (including detach mode)
 - [Pattern Matching Reference](docs/REGEX_REFERENCE.md) - Regex patterns & examples

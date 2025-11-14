@@ -74,8 +74,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Block Buffering Issue**: Documented the `timeout N command 2>&1` problem and `ee` solution
 
 ### Documentation
-- **Real-World Examples**: 10 detailed scenarios where `ee` excels over `grep`
+- **Real-World Examples**: 11 detailed scenarios where `ee` excels over `grep`
   - Problem 0: The silent `timeout N command 2>&1` problem (NEW)
+  - Problem 11: Pattern development without logs - Exploration → Analysis → Production workflow (NEW)
   - Includes: false positives, dual patterns, stall detection, pattern testing, CI/CD integration
   - Before/after comparisons with measurable benefits
   - Lines of code reduction: 80-95%
