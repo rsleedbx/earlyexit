@@ -79,6 +79,43 @@ ee --stderr-idle-exit 1 'SUCCESS' -- command
 ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
 ```
 
+## 🚨 CRITICAL: Don't Use `-e` (Error Pattern) Alone!
+
+**NEVER use `-e` without a success pattern OR traditional pattern!**
+
+```bash
+# ❌ WRONG - triggers watch mode, disables stuck detection and early exit
+ee -t 120 --max-repeat 8 --stuck-ignore-timestamps \
+  -e 'Error|Exception' --progress --unix-exit-codes \
+  -- mist dml monitor --id xyz
+
+# Output: "Watch mode enabled (no pattern specified)"
+# Result: Stuck detection DOES NOT WORK, command runs until timeout!
+
+# ✅ CORRECT Option 1: Traditional pattern (simplest, RECOMMENDED)
+ee -t 120 --max-repeat 8 --stuck-ignore-timestamps \
+  'Error|Exception' --progress --unix-exit-codes \
+  -- mist dml monitor --id xyz
+
+# ✅ CORRECT Option 2: Success + Error patterns (both required)
+ee -t 120 --max-repeat 8 --stuck-ignore-timestamps \
+  --success-pattern 'SUCCESS|Completed' \
+  --error-pattern 'Error|Exception' \
+  --progress --unix-exit-codes \
+  -- mist dml monitor --id xyz
+
+# ✅ CORRECT Option 3: Stderr idle exit (best for hanging errors)
+ee -t 120 --stderr-idle-exit 2 --max-repeat 8 \
+  'SUCCESS|Completed' --progress --unix-exit-codes \
+  -- mist dml monitor --id xyz
+```
+
+**Why `-e` alone triggers watch mode:**
+- ee requires: traditional pattern OR (success pattern + error pattern) OR timeout
+- `-e` alone = no traditional pattern, no success pattern → watch mode
+- Watch mode = different code path, stuck detection disabled
+- Result = command runs until timeout even with `--max-repeat`!
+
 ## ✅ REQUIRED PATTERNS (USE THESE)
 ```bash
 # ALWAYS use ee for long-running commands:
