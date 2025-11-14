@@ -697,40 +697,48 @@ timeout 60 mist dml monitor 2>&1 | tee /tmp/monitor.log
 # Don't know what pattern to watch for yet - just explore
 ee -t 60 'ERROR|success|completed' -- \
   mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
-
-# Output:
-# 📝 Logging to:
-#    stdout: /tmp/ee-mist_dml_monitor-12345.log
-#    stderr: /tmp/ee-mist_dml_monitor-12345.errlog
-# 
-# Starting monitor...
-# Checking status...
-# ERROR: Connection timeout
-# Retrying... (attempt 1)
-# Retrying... (attempt 2)
-# Retrying... (attempt 3)
-# ERROR: Max retries exceeded
-# 
-# ⏱️  Timeout: No pattern matched in 60 seconds
 ```
+
+**What you'll see** (ee automatically prints log locations at the start):
+
+```
+📝 Logging to:
+   stdout: /tmp/ee-mist_dml_monitor-12345.log
+   stderr: /tmp/ee-mist_dml_monitor-12345.errlog
+
+Starting monitor...
+Checking status...
+ERROR: Connection timeout
+Retrying... (attempt 1)
+Retrying... (attempt 2)
+Retrying... (attempt 3)
+ERROR: Max retries exceeded
+
+⏱️  Timeout: No pattern matched in 60 seconds
+```
+
+> **Note**: The actual PID (12345) will be different each run. Copy the log path from your terminal output.
 
 #### Step 2: Analysis (Pattern Testing)
 
 ```bash
-# Now analyze the saved logs to understand what happened
+# Now analyze the saved logs (use the actual path from Step 1)
 cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' --test-pattern
+```
 
-# Output:
-# 📊 Statistics:
-#    Total lines:     234
-#    Matched lines:   5
-# 
-# ✅ Pattern matched 5 time(s):
-# Line  12: ERROR: Connection timeout
-# Line  45: error: retry attempt 1
-# Line  67: error: retry attempt 2
-# Line  89: error: retry attempt 3
-# Line 234: ERROR: Max retries exceeded
+**Output:**
+
+```
+📊 Statistics:
+   Total lines:     234
+   Matched lines:   5
+
+✅ Pattern matched 5 time(s):
+Line  12: ERROR: Connection timeout
+Line  45: error: retry attempt 1
+Line  67: error: retry attempt 2
+Line  89: error: retry attempt 3
+Line 234: ERROR: Max retries exceeded
 ```
 
 #### Step 3: Refinement (Exclude False Positives)
@@ -740,16 +748,19 @@ cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' --test-pattern
 cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' \
   --test-pattern \
   --exclude 'retry attempt'
+```
 
-# Output:
-# 📊 Statistics:
-#    Total lines:     234
-#    Matched lines:   2
-#    Excluded lines:  3
-# 
-# ✅ Pattern matched 2 time(s):
-# Line  12: ERROR: Connection timeout
-# Line 234: ERROR: Max retries exceeded
+**Output:**
+
+```
+📊 Statistics:
+   Total lines:     234
+   Matched lines:   2
+   Excluded lines:  3
+
+✅ Pattern matched 2 time(s):
+Line  12: ERROR: Connection timeout
+Line 234: ERROR: Max retries exceeded
 ```
 
 #### Step 4: Production (Optimized Pattern)
