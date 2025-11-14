@@ -695,7 +695,8 @@ timeout 60 mist dml monitor 2>&1 | tee /tmp/monitor.log
 
 ```bash
 # Don't know what pattern to watch for yet - just explore
-ee -t 60 'ERROR|success|completed' -- \
+# Use --file-prefix for predictable log names (easier to type later)
+ee -t 60 --file-prefix /tmp/mist-monitor 'ERROR|success|completed' -- \
   mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
 ```
 
@@ -703,8 +704,8 @@ ee -t 60 'ERROR|success|completed' -- \
 
 ```
 📝 Logging to:
-   stdout: /tmp/ee-mist_dml_monitor-12345.log
-   stderr: /tmp/ee-mist_dml_monitor-12345.errlog
+   stdout: /tmp/mist-monitor.log
+   stderr: /tmp/mist-monitor.errlog
 
 Starting monitor...
 Checking status...
@@ -717,13 +718,17 @@ ERROR: Max retries exceeded
 ⏱️  Timeout: No pattern matched in 60 seconds
 ```
 
-> **Note**: The actual PID (12345) will be different each run. Copy the log path from your terminal output.
+> **Tip**: Using `--file-prefix` gives you a predictable filename (no PID), making it easy to reference later without copy/pasting.
 
 #### Step 2: Analysis (Pattern Testing)
 
 ```bash
-# Now analyze the saved logs (use the actual path from Step 1)
-cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' --test-pattern
+# Now analyze the saved logs (easy to type!)
+cat /tmp/mist-monitor.log | ee 'ERROR|error' --test-pattern
+
+# Or use a shell variable for convenience
+LOG=/tmp/mist-monitor.log
+cat $LOG | ee 'ERROR|error' --test-pattern
 ```
 
 **Output:**
@@ -745,9 +750,12 @@ Line 234: ERROR: Max retries exceeded
 
 ```bash
 # Retries are expected (not real errors) - exclude them
-cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR|error' \
+cat /tmp/mist-monitor.log | ee 'ERROR|error' \
   --test-pattern \
   --exclude 'retry attempt'
+
+# With variable (even cleaner)
+cat $LOG | ee 'ERROR|error' --test-pattern --exclude 'retry attempt'
 ```
 
 **Output:**
@@ -766,15 +774,16 @@ Line 234: ERROR: Max retries exceeded
 #### Step 4: Production (Optimized Pattern)
 
 ```bash
-# Now we know exactly what to watch for
+# Now we know exactly what to watch for - deploy with confidence
 ee -t 60 \
+  --file-prefix /tmp/mist-monitor \
   --success-pattern 'Monitor started successfully' \
   --error-pattern 'Connection timeout|Max retries exceeded' \
   --exclude 'retry attempt' \
   -- mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
 
 # Exits immediately when success or real error is detected
-# Logs are still saved for debugging
+# Logs are still saved to /tmp/mist-monitor.log for debugging
 ```
 
 **Why ee wins:**
@@ -793,6 +802,7 @@ ee -t 60 \
 | **Real-time output?** | ❌ No (block buffering) | ✅ Yes (unbuffered) |
 | **Early exit?** | ❌ No (waits full timeout) | ✅ Yes (on pattern match) |
 | **Log location shown?** | ❌ No | ✅ Yes (printed at start) |
+| **Predictable filenames?** | ❌ Must use `tee` manually | ✅ Yes (`--file-prefix`) |
 | **Iteration time** | ⭐ Must re-run command each time | ⭐⭐⭐⭐⭐ Test instantly against logs |
 
 **Smart Auto-Logging Rules:**
