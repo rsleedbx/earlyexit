@@ -1835,7 +1835,14 @@ def main():
         sys.argv[1:1] = env_args
     
     parser = argparse.ArgumentParser(
-        description='Early exit pattern matching - exit immediately when pattern matches',
+        description='''Early exit pattern matching - exit immediately when pattern matches
+
+Like grep + timeout combined, but with hang detection, stderr monitoring, stuck detection,
+pattern exclusions, success/error patterns, and more.
+
+📚 For comprehensive examples and use cases:
+   GitHub: https://github.com/rsleedbx/earlyexit
+   Real-world examples: https://github.com/rsleedbx/earlyexit/blob/master/docs/REAL_WORLD_EXAMPLES.md''',
         allow_abbrev=False,  # Prevent --id from matching --idle-timeout, etc.
         epilog="""
 Examples:
@@ -1892,6 +1899,32 @@ Examples:
   
   # Invert match - exit when pattern DOESN'T match
   health_check | earlyexit -v 'OK' -t 10
+  
+  # Stuck detection - exit if same line repeats
+  earlyexit --max-repeat 5 'ERROR' -- mist dml monitor --id xyz
+  earlyexit --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
+  
+  # Stderr idle exit - exit after error messages finish
+  earlyexit --stderr-idle-exit 1 'SUCCESS' -- python script.py
+  earlyexit --stderr-idle-exit 1 --exclude 'WARNING|DEBUG' 'SUCCESS' -- command
+  
+  # Pattern exclusions - filter false positives
+  earlyexit 'Error' --exclude 'Error: early error detection' -- terraform apply
+  
+  # Success/error patterns - exit on first match
+  earlyexit --success-pattern 'deployed' --error-pattern 'ERROR|FAIL' -- command
+  
+  # Pattern testing - test against logs without running command
+  cat terraform.log | earlyexit 'Error' --test-pattern
+  
+  # Access logs automatically (with timeout, auto-logging enabled)
+  earlyexit -t 300 --max-repeat 5 'ERROR' -- command
+  source ~/.ee_env.$$ && cat $EE_STDOUT_LOG
+
+📚 More Examples:
+  GitHub: https://github.com/rsleedbx/earlyexit
+  Real-world examples: https://github.com/rsleedbx/earlyexit/blob/master/docs/REAL_WORLD_EXAMPLES.md
+  13 scenarios where ee excels over grep/timeout
 
 Exit codes (grep convention, default):
   0 - Pattern matched (error found, subprocess terminated)
