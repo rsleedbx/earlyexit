@@ -820,6 +820,134 @@ Run → Logs auto-saved → Test patterns → Refine → Deploy
 
 ---
 
+## Problem 12: Stuck/No-Progress Detection
+
+### ❌ The Problem (grep/timeout)
+
+A monitoring command gets **stuck** showing the same output repeatedly (with only timestamps changing):
+
+```bash
+# Mist monitoring gets stuck
+mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Output (repeating forever):
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:03:45]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:03:55]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:05]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:15]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:25]
+# ... (continues for 30 minutes!) ...
+```
+
+**Why `-I`/`--idle-timeout` doesn't help:**
+- Idle timeout detects **no new output** (command silent)
+- This command **is** producing output (every 10 seconds)
+- But it's **not making progress** (same line, only timestamp changes)
+
+**Problems:**
+- ❌ Can't detect stuck state automatically
+- ❌ Wastes time watching stuck output
+- ❌ No way to differentiate "stuck" from "working"
+- ❌ CI/CD pipelines timeout after 30-60 minutes
+
+### ✅ The Solution (ee)
+
+```bash
+# Step 1: Try simple repeat detection first (see raw output)
+ee -t 300 --max-repeat 5 'ERROR|Completed' -- \
+  mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# If timestamps make lines different, add smart normalization:
+ee -t 300 --max-repeat 5 --stuck-ignore-timestamps 'ERROR|Completed' -- \
+  mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Output:
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:03:45]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:03:55]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:05]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:15]
+
+🔁 Stuck detected: Same line repeated 5 times (ignoring timestamps)
+   Repeated line: rble-308   -    0        0        0        | N/A   ...
+
+# Exit code: 2 (stuck/no progress)
+```
+
+**Exit codes tell you exactly what happened:**
+```bash
+echo $?
+# 0 = Pattern matched (success or completion detected)
+# 1 = Command completed but pattern never matched
+# 2 = Stuck detected (or timeout without match)
+# 3 = Command failed to start
+```
+
+**Best practice: Use with auto-logging to analyze stuck state**
+
+```bash
+# Logs saved automatically with timeout
+ee -t 300 --max-repeat 5 --stuck-ignore-timestamps 'ERROR|Completed' -- \
+  mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Access logs easily (no copy/paste of PIDs!)
+source ~/.ee_env.$$
+cat $EE_STDOUT_LOG
+
+# Check exit code
+echo $EE_EXIT_CODE
+# 2 = stuck detected
+```
+
+### Comparison
+
+| Approach | Detects Stuck? | Time Wasted | Exit Code | Distinguishes Stuck from Timeout? |
+|----------|---------------|-------------|-----------|-----------------------------------|
+| **`mist dml monitor`** | ❌ No | 30+ minutes | ⚠️ 0 (always success) | ❌ No |
+| **`timeout 1800 mist dml monitor`** | ❌ No | 30 minutes | ⚠️ 124 (only timeout) | ❌ No |
+| **`timeout + grep`** | ❌ No | 30 minutes | ⚠️ No exit code for stuck | ❌ No |
+| **`ee -I 60 'ERROR' -- mist dml monitor`** | ❌ No (idle ≠ stuck) | Varies | ⚠️ 2 (timeout, not stuck) | ❌ No |
+| **`ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- mist dml monitor`** | ✅ Yes | ~50 seconds | ✅ 2 (stuck) | ⚠️ Same exit code |
+
+**What `--stuck-ignore-timestamps` removes:**
+
+✅ **Automatically stripped** (common timestamp formats):
+- `[09:03:45]` or `[09:03:45.123]` - Bracketed times
+- `2024-11-14` or `2024/11/14` - ISO dates
+- `09:03:45` (standalone) - Time without brackets
+- `2024-11-14T09:03:45Z` - ISO 8601 timestamps
+- `1731578625` (10 digits) - Unix epoch
+- `1731578625000` (13 digits) - Millisecond epoch
+
+❌ **NOT stripped** (need custom logic):
+- `Nov 14, 2024` - Month name formats
+- `14-Nov-2024` - Day-month-year
+- `09h03m45s` - Custom formats
+- Request IDs or counters
+
+**When to use simple vs. smart:**
+
+```bash
+# 1. Start simple (see what's actually repeating)
+ee --max-repeat 5 'ERROR' -- command
+
+# If it detects stuck too early (timestamps differ):
+#   rble-308   -    0    | N/A    [09:03:45]
+#   rble-308   -    0    | N/A    [09:03:55]
+# These look different to simple comparison!
+
+# 2. Add smart normalization
+ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
+# Now timestamps are ignored, content is compared
+```
+
+**Real-world savings:**
+- ⏱️ Detects stuck state in ~50 seconds (5 repeats × 10s interval)
+- 💰 Saves ~29 minutes per stuck instance
+- 🎯 Clear exit code (2) for automation
+- 📊 Logs captured automatically for debugging
+
+---
+
 ## Summary: When to Use `ee` Over `grep`
 
 | Scenario | Problem | ee Advantage |
@@ -829,6 +957,7 @@ Run → Logs auto-saved → Test patterns → Refine → Deploy
 | **False positives in logs** | ⭐⭐⭐ Complex pipes | `--exclude` flag |
 | **Success OR error patterns** | ⭐⭐⭐⭐⭐ Race conditions | `--success-pattern` + `--error-pattern` |
 | **Stall/hang detection** | ⭐⭐⭐⭐⭐ Complex shell scripts | `-I` idle timeout |
+| **Stuck/no-progress detection** | ⭐⭐⭐⭐⭐ Wasted time, no detection | `--max-repeat` with smart timestamp normalization |
 | **Pattern testing** | ⭐⭐⭐⭐ Slow iteration | `--test-pattern` mode |
 | **CI/CD integration** | ⭐⭐⭐⭐ Background jobs, signals | One simple command |
 | **Context with exclusions** | ⭐⭐⭐⭐ Awk/sed required | `--exclude` + `-C` |
@@ -850,6 +979,7 @@ Real examples from this document show consistent complexity reduction:
 | Dual-pattern monitoring | 30+ lines (background jobs, signals) | 3 lines | **90%** |
 | False positive filtering | 10+ lines (multiple pipes) | 1 line | **90%** |
 | Stall detection | 20+ lines (custom loop, stat) | 1 line | **95%** |
+| Stuck detection | 25+ lines (custom state tracking) | 1 line | **96%** |
 | CI/CD integration | 15+ lines (complex scripting) | 3 lines | **80%** |
 
 ### Time Savings

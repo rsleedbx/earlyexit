@@ -173,10 +173,12 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 - ✅ **Success/Error pattern matching** - Early exit on success OR error
 - 🚫 **Pattern exclusions** - Filter out false positives
 - 🧪 **Pattern testing mode** - Test patterns against logs without running commands
+- 🔁 **Stuck/no-progress detection** - Auto-exit when same line repeats (with timestamp normalization)
 
 ### Unique Capabilities
-- 🔥 **Stall detection** - No other tool does this easily
+- 🔥 **Stall detection** - Idle timeout (no new output)
   - See [DIY alternatives](docs/STALL_DETECTION_ALTERNATIVES.md) (they're complex!)
+- 🔥 **Stuck detection** - Repeating output (no progress)
 - 🔥 **Delayed exit** - Capture full error context
 - 🔥 **Interactive learning** - Teach patterns via Ctrl+C
 
@@ -268,7 +270,22 @@ ee --success-pattern 'Successfully built' \
 ee -I 300 'ERROR' -- ./run-migrations.sh  # Exit if no output for 5 min
 ```
 
-### 4. **Test Patterns Before Production**
+### 4. **Stuck/No-Progress Detection**
+
+```bash
+# ❌ Monitor commands that get stuck showing the same output repeatedly
+mist dml monitor --id xyz --interval 10  # Stuck at "N/A" for 5 minutes!
+
+# ✅ ee detects stuck state and exits automatically
+ee --max-repeat 5 'ERROR' -- mist dml monitor --id xyz
+# Exit code 2 (stuck) if same line repeats 5 times
+
+# ✅ Smart version: ignore timestamp changes
+ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- mist dml monitor --id xyz
+# Detects: "rble-308  -  0  0  0  | N/A  [09:03:45]" repeating (timestamps differ but content same)
+```
+
+### 5. **Test Patterns Before Production**
 
 ```bash
 # ❌ grep: slow iteration on large logs, no statistics
@@ -279,7 +296,7 @@ cat huge-log.txt | ee 'ERROR' --test-pattern --exclude 'ERROR_OK'
 # Shows: Total lines, matched lines, excluded lines, line numbers
 ```
 
-### 5. **Kubernetes Deployment Monitoring**
+### 6. **Kubernetes Deployment Monitoring**
 
 ```bash
 # ❌ grep: complex background jobs and signal handling
@@ -291,7 +308,7 @@ ee --success-pattern 'successfully rolled out' \
    -- kubectl rollout status deployment/myapp
 ```
 
-[**See 11 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
+[**See 12 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
 
 ---
 
@@ -729,10 +746,81 @@ cat deploy.log | ee \
 
 ---
 
+### Stuck/No-Progress Detection
+
+Detect when a command is **stuck** (producing output but making no progress):
+
+```bash
+# Simple: Exit if exact same line repeats 5 times
+ee --max-repeat 5 'ERROR' -- mist dml monitor --id xyz
+
+# Smart: Ignore timestamp changes when comparing lines
+ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- mist dml monitor --id xyz
+```
+
+**What gets normalized with `--stuck-ignore-timestamps`:**
+
+✅ **Automatically stripped:**
+- `[HH:MM:SS]` or `[HH:MM:SS.mmm]` - Bracketed times
+- `YYYY-MM-DD` or `YYYY/MM/DD` - ISO dates
+- `HH:MM:SS` (standalone) - Time without brackets
+- `2024-11-14T09:03:45` or `2024-11-14 09:03:45` - ISO 8601 timestamps
+- `1731578625` (10 digits) - Unix epoch timestamps
+- `1731578625000` (13 digits) - Millisecond timestamps
+
+❌ **NOT stripped automatically** (you'll need custom patterns):
+- `Nov 14, 2024` - Month name formats
+- `14-Nov-2024` - Day-month-year formats
+- Custom timestamp formats like `09h03m45s`
+- Application-specific counters or IDs
+
+**Example output being detected:**
+
+```
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:03:45]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:03:55]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:05]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:15]
+rble-308   -    0        0        0        | N/A             N/A             -    -    [09:04:25]
+
+🔁 Stuck detected: Same line repeated 5 times (ignoring timestamps)
+   Repeated line: rble-308   -    0        0        0        | N/A   ...
+```
+
+**Best practices:**
+
+1. **Start without timestamps first** to see the raw pattern:
+   ```bash
+   # See what's actually repeating
+   ee --max-repeat 5 'ERROR' -- command
+   ```
+
+2. **Add timestamp normalization** only if needed:
+   ```bash
+   # If timestamps are the only difference
+   ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
+   ```
+
+3. **Use with auto-logging** to capture full context:
+   ```bash
+   # Logs saved automatically with timeout
+   ee -t 300 --max-repeat 10 --stuck-ignore-timestamps 'ERROR' -- command
+   # Then access logs: source ~/.ee_env.$$ && cat $EE_STDOUT_LOG
+   ```
+
+**Exit code:**
+- `2` = Stuck detected (same as timeout - "no progress made")
+
+**Difference from idle timeout:**
+- `-I`/`--idle-timeout`: No **new** output (command silent)
+- `--max-repeat`: Command producing output but **not progressing** (same line repeating)
+
+---
+
 ## Documentation
 
 ### 📖 User Guides
-- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 11 scenarios where `ee` excels over `grep`
+- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 12 scenarios where `ee` excels over `grep`
 - [**Complete User Guide**](docs/USER_GUIDE.md) - Comprehensive usage examples
 - [**Exit Codes Reference**](docs/EXIT_CODES.md) - All exit codes explained (including detach mode)
 - [Pattern Matching Reference](docs/REGEX_REFERENCE.md) - Regex patterns & examples

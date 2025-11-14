@@ -47,6 +47,49 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Timeout exceeded")
 
 
+def normalize_line_for_comparison(line: str, strip_timestamps: bool = True) -> str:
+    """
+    Normalize a line for comparison to detect stuck/repeated output.
+    
+    Args:
+        line: Input line to normalize
+        strip_timestamps: If True, remove common timestamp patterns
+    
+    Returns:
+        Normalized line with timestamps removed and whitespace collapsed
+    """
+    if not strip_timestamps:
+        return line.strip()
+    
+    import re
+    
+    # Strip common timestamp patterns
+    normalized = line
+    
+    # [HH:MM:SS] or [HH:MM:SS.mmm]
+    normalized = re.sub(r'\[\d{2}:\d{2}:\d{2}(?:\.\d+)?\]', '', normalized)
+    
+    # YYYY-MM-DD or YYYY/MM/DD
+    normalized = re.sub(r'\d{4}[-/]\d{2}[-/]\d{2}', '', normalized)
+    
+    # HH:MM:SS (not in brackets)
+    normalized = re.sub(r'\b\d{2}:\d{2}:\d{2}\b', '', normalized)
+    
+    # Timestamps like "2024-11-14T09:03:45" or "2024-11-14 09:03:45"
+    normalized = re.sub(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?', '', normalized)
+    
+    # Unix epoch timestamps (10 digits)
+    normalized = re.sub(r'\b\d{10}\b', '', normalized)
+    
+    # Millisecond timestamps (13 digits)
+    normalized = re.sub(r'\b\d{13}\b', '', normalized)
+    
+    # Collapse multiple spaces to single space
+    normalized = re.sub(r'\s+', ' ', normalized)
+    
+    return normalized.strip()
+
+
 def update_ee_env_exit_code(exit_code: int):
     """Update the exit code in the environment file for the current shell session."""
     try:
@@ -347,7 +390,8 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                    execution_id: Optional[str] = None, start_time: Optional[float] = None,
                    source_file_container: Optional[list] = None, post_match_lines: Optional[list] = None,
                    log_file=None, lines_processed: Optional[list] = None,
-                   success_pattern: Optional[Pattern] = None, match_type: Optional[list] = None):
+                   success_pattern: Optional[Pattern] = None, match_type: Optional[list] = None,
+                   stuck_detected: Optional[list] = None):
     """
     Process a stream (stdout or stderr) line by line
     
@@ -407,6 +451,12 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     
     line_number = line_number_offset
     
+    # Stuck detection: track repeated lines
+    repeat_count = 0
+    last_normalized_line = None
+    max_repeat = getattr(args, 'max_repeat', None)
+    strip_timestamps = getattr(args, 'stuck_ignore_timestamps', False)
+    
     # Context buffer for capturing lines before matches (like grep -B)
     context_buffer = []
     context_size = getattr(args, 'before_context', 0)  # Number of lines to keep
@@ -444,6 +494,27 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
             # Track lines for progress indicator
             if lines_processed is not None:
                 lines_processed[0] += 1
+            
+            # Stuck detection: check if line is repeating
+            if max_repeat:
+                # Normalize line for comparison
+                normalized_line = normalize_line_for_comparison(line_stripped, strip_timestamps)
+                
+                if normalized_line == last_normalized_line and normalized_line:
+                    repeat_count += 1
+                    if repeat_count >= max_repeat:
+                        # Stuck detected!
+                        if not args.quiet:
+                            timestamp_msg = " (ignoring timestamps)" if strip_timestamps else ""
+                            print(f"\n🔁 Stuck detected: Same line repeated {repeat_count} times{timestamp_msg}", file=sys.stderr)
+                            print(f"   Repeated line: {line_stripped}", file=sys.stderr)
+                        # Set stuck flag and break
+                        if stuck_detected is not None:
+                            stuck_detected[0] = True
+                        break
+                else:
+                    repeat_count = 1
+                    last_normalized_line = normalized_line
             
             # Maintain context buffer (ring buffer of last N lines) for -B/--before-context
             if context_size > 0:
@@ -739,6 +810,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     timed_out = [False]  # Track if we timed out
     timeout_reason = [""]  # Track why we timed out
     detached_pid = [None]  # Track PID if we detach from subprocess
+    stuck_detected = [False]  # Track if stuck detection triggered
     
     # Track output timing
     start_time = telemetry_start_time or time.time()
@@ -1000,7 +1072,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                          match_timestamp,
                                          telemetry_collector, execution_id, start_time, source_file_container,
                                          post_match_lines, log_f, statistics['lines_processed'],
-                                         success_pattern, match_type)
+                                         success_pattern, match_type, stuck_detected)
                         except:
                             pass
                     return monitor
@@ -1062,6 +1134,19 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             
             # Wait for threads to complete or match to be found
             while any(t.is_alive() for t in threads):
+                # Check for stuck detection
+                if stuck_detected[0]:
+                    # Stuck detected - cleanup and return
+                    if timeout_timer:
+                        timeout_timer.cancel()
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=1)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                    return 2, 'stuck'
+                
                 if match_count[0] >= args.max_count:
                     # Check if delay-exit period has expired OR if enough lines captured
                     should_exit = False
@@ -1374,7 +1459,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                  None, None, first_stderr_time,
                                  None, telemetry_collector, execution_id, start_time, source_file_container,
                                  post_match_lines, stderr_log_file, statistics['lines_processed'],
-                                 success_pattern, match_type)
+                                 success_pattern, match_type, stuck_detected)
                 except:
                     pass
                 # Drain stdout
@@ -1395,7 +1480,7 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                  None, None, first_stdout_time,
                                  None, telemetry_collector, execution_id, start_time, source_file_container,
                                  post_match_lines, stdout_log_file, statistics['lines_processed'],
-                                 success_pattern, match_type)
+                                 success_pattern, match_type, stuck_detected)
                 except:
                     pass
                 # Drain stderr (only if we didn't detach)
@@ -1864,6 +1949,12 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Directory for auto-generated logs (default: /tmp, used with --auto-log)')
     parser.add_argument('-m', '--max-count', type=int, default=1, metavar='NUM',
                        help='Stop after NUM matches (default: 1, like grep -m)')
+    parser.add_argument('--max-repeat', type=int, metavar='NUM',
+                       help='Exit if the same line repeats NUM times consecutively (stuck detection). '
+                            'Use with --stuck-ignore-timestamps to ignore timestamp changes.')
+    parser.add_argument('--stuck-ignore-timestamps', action='store_true',
+                       help='Strip common timestamp patterns when checking for repeated lines (requires --max-repeat). '
+                            'Normalizes timestamps like [HH:MM:SS], YYYY-MM-DD, etc.')
     parser.add_argument('--no-telemetry', action='store_true',
                        help='Disable telemetry collection (also: EARLYEXIT_NO_TELEMETRY=1). No SQLite database created when disabled.')
     parser.add_argument('-P', '--perl-regexp', action='store_true',
@@ -2551,6 +2642,7 @@ Exit codes (Unix convention, --unix-exit-codes):
             first_output_seen = [False]
             last_output_time = [time.time()]  # Initialize to start time
             stop_reading = [False]  # Signal to stop reading
+            stuck_detected = [False]  # Track stuck detection for pipe mode
             
             def timeout_callback(reason):
                 """Handle timeout in pipe mode"""
@@ -2594,12 +2686,19 @@ Exit codes (Unix convention, --unix-exit-codes):
                                             match_timestamp,
                                             telemetry_collector, execution_id, telemetry_start_time, source_file_container,
                                             post_match_lines, None, None, 
-                                            success_pattern=None, match_type=match_type)
+                                            success_pattern=None, match_type=match_type, stuck_detected=stuck_detected)
             
             # Stop monitoring thread
             stop_reading[0] = True
             if output_timeout_thread:
                 output_timeout_thread.join(timeout=0.5)
+            
+            # Check if stuck was detected
+            if stuck_detected[0]:
+                record_telemetry(2, 'stuck')
+                exit_code = 2
+                exit_code = map_exit_code(exit_code, args.unix_exit_codes)
+                return exit_code
             
             # Check if we timed out
             if timed_out[0]:
