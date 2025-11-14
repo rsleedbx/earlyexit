@@ -948,6 +948,100 @@ ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
 
 ---
 
+## Problem 13: Error Messages Finish But Command Hangs
+
+### ❌ The Problem (timeout/manual cancel)
+
+Python or Node.js commands print errors to stderr then hang instead of exiting:
+
+```bash
+# Mist command encounters error
+mist dml monitor --id rble-3087789530
+
+# Output:
+📊 Monitoring DML + Replication
+   Source: rble-3087789530
+   Session: rb_le-691708f8
+   Update interval: 10s
+
+Press Ctrl+C to stop monitoring
+================================================================================
+
+🔍 Loading replication session: rb_le-691708f8
+⚠️  Error loading session: 'LakeflowConnectProvider' object has no attribute 'storage'
+Traceback (most recent call last):
+  File "/Users/robert.lee/github/mist/mist/cli/main.py", line 1770, in _monitor_dml_and_pipeline
+    session = provider.storage.get_session(args.session_id)
+AttributeError: 'LakeflowConnectProvider' object has no attribute 'storage'
+
+# ... then hangs forever, waiting for user Ctrl+C! 😤
+```
+
+**Problems:**
+- ❌ Error printed but command doesn't exit
+- ❌ CI/CD pipelines wait for full timeout (30+ minutes)
+- ❌ Can't detect "error is complete"
+- ❌ Manual intervention required
+
+**Why `-I`/`--idle-timeout` doesn't help:**
+- Stdout may still be active (progress bars, heartbeats)
+- Idle timeout checks **all** streams, not just stderr
+- Need to detect "**stderr** went quiet after errors"
+
+### ✅ The Solution (ee)
+
+```bash
+# Exit 1 second after stderr goes idle
+ee --stderr-idle-exit 1 'SUCCESS' -- \
+  mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Output:
+📊 Monitoring DML + Replication
+⚠️  Error loading session: 'LakeflowConnectProvider' object has no attribute 'storage'
+Traceback (most recent call last):
+  File "/Users/robert.lee/github/mist/mist/cli/main.py", line 1770
+AttributeError: 'LakeflowConnectProvider' object has no attribute 'storage'
+
+⏸️  Stderr idle: No stderr output for 1.0s (error messages complete)
+⏱️  Timeout: stderr idle for 1.0s
+
+# Exit code: 2 (stderr idle)
+```
+
+**With exclude pattern for warnings:**
+
+```bash
+# Filter out non-error stderr output
+ee --stderr-idle-exit 1 --exclude 'WARNING|DEBUG|INFO' 'SUCCESS' -- \
+  mist dml monitor --id rble-3087789530
+```
+
+### Comparison
+
+| Approach | Detects Error Complete? | Time Wasted | Exit Code | Distinguishes Types? |
+|----------|------------------------|-------------|-----------|---------------------|
+| **`mist dml monitor`** | ❌ No | Forever (manual Ctrl+C) | ⚠️ N/A (never exits) | ❌ No |
+| **`timeout 1800 mist dml monitor`** | ❌ No | 30 minutes | ⚠️ 124 (always timeout) | ❌ No |
+| **`ee -I 60 'ERROR' -- mist dml monitor`** | ❌ No (stdout active) | 60 seconds | ⚠️ 2 (idle, not stderr-specific) | ❌ No |
+| **`ee --stderr-idle-exit 1 'SUCCESS' -- mist dml monitor`** | ✅ Yes | ~1 second | ✅ 2 (stderr idle) | ⚠️ Same as timeout |
+
+**When to use:**
+- Python/Node.js errors → hang
+- Error traceback → no exit
+- Stderr active → stderr quiet → no exit
+
+**Timing recommendations:**
+- **0.5s** - Single-line errors
+- **1s** - Multi-line tracebacks (recommended)
+- **2s** - Network/slow errors
+
+**Real-world savings:**
+- **Before:** Hangs forever, manual Ctrl+C or 30min timeout
+- **After:** Auto-detects in ~1 second
+- **Savings:** 29 minutes 59 seconds per error
+
+---
+
 ## Summary: When to Use `ee` Over `grep`
 
 | Scenario | Problem | ee Advantage |
@@ -958,6 +1052,7 @@ ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
 | **Success OR error patterns** | ⭐⭐⭐⭐⭐ Race conditions | `--success-pattern` + `--error-pattern` |
 | **Stall/hang detection** | ⭐⭐⭐⭐⭐ Complex shell scripts | `-I` idle timeout |
 | **Stuck/no-progress detection** | ⭐⭐⭐⭐⭐ Wasted time, no detection | `--max-repeat` with smart timestamp normalization |
+| **Stderr idle exit** | ⭐⭐⭐⭐⭐ Error then hang | `--stderr-idle-exit` (stderr-specific) |
 | **Pattern testing** | ⭐⭐⭐⭐ Slow iteration | `--test-pattern` mode |
 | **CI/CD integration** | ⭐⭐⭐⭐ Background jobs, signals | One simple command |
 | **Context with exclusions** | ⭐⭐⭐⭐ Awk/sed required | `--exclude` + `-C` |

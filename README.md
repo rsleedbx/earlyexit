@@ -174,11 +174,13 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 - 🚫 **Pattern exclusions** - Filter out false positives
 - 🧪 **Pattern testing mode** - Test patterns against logs without running commands
 - 🔁 **Stuck/no-progress detection** - Auto-exit when same line repeats (with timestamp normalization)
+- ⏸️ **Stderr idle exit** - Auto-exit when error messages finish (stderr goes quiet)
 
 ### Unique Capabilities
 - 🔥 **Stall detection** - Idle timeout (no new output)
   - See [DIY alternatives](docs/STALL_DETECTION_ALTERNATIVES.md) (they're complex!)
 - 🔥 **Stuck detection** - Repeating output (no progress)
+- 🔥 **Stderr idle exit** - Error messages complete, command hangs
 - 🔥 **Delayed exit** - Capture full error context
 - 🔥 **Interactive learning** - Teach patterns via Ctrl+C
 
@@ -308,7 +310,7 @@ ee --success-pattern 'successfully rolled out' \
    -- kubectl rollout status deployment/myapp
 ```
 
-[**See 12 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
+[**See 13 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
 
 ---
 
@@ -817,10 +819,62 @@ rble-308   -    0        0        0        | N/A             N/A             -  
 
 ---
 
+### Stderr Idle Exit
+
+Exit automatically after error messages finish printing to stderr:
+
+```bash
+# Exit 1 second after stderr goes idle
+ee --stderr-idle-exit 1 'SUCCESS' -- mist dml monitor --id xyz
+
+# Real-world example: Python error then command hangs
+# ERROR: Something went wrong!
+# Traceback (most recent call last):
+#   File test.py, line 42
+# AttributeError: object has no attribute 'storage'
+# 
+# ⏸️  Stderr idle: No stderr output for 1.0s (error messages complete)
+# Exit code: 2
+```
+
+**When to use:**
+- Python/Node.js crashes that print error but don't exit
+- Commands that print errors to stderr then hang
+- Error messages finish but process continues running
+
+**Best practices:**
+
+1. **Use `--exclude` for non-error stderr output:**
+   ```bash
+   # Filter out warnings/debug logs
+   ee --stderr-idle-exit 1 --exclude 'WARNING|DEBUG' 'SUCCESS' -- command
+   ```
+
+2. **Combine with timeout:**
+   ```bash
+   # Exit on stderr idle OR overall timeout
+   ee -t 300 --stderr-idle-exit 1 'SUCCESS' -- command
+   ```
+
+3. **Choose appropriate delay:**
+   - `0.5s` - Fast errors (single line)
+   - `1s` - Standard (multi-line tracebacks)
+   - `2s` - Slow output or network errors
+
+**Exit code:**
+- `2` = Stderr idle timeout (error messages complete)
+
+**Difference from other timeouts:**
+- `-I`/`--idle-timeout`: **All** streams idle
+- `--stderr-idle-exit`: **Stderr** idle (after seeing stderr output)
+- Specifically designed for error detection
+
+---
+
 ## Documentation
 
 ### 📖 User Guides
-- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 12 scenarios where `ee` excels over `grep`
+- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 13 scenarios where `ee` excels over `grep`
 - [**Complete User Guide**](docs/USER_GUIDE.md) - Comprehensive usage examples
 - [**Exit Codes Reference**](docs/EXIT_CODES.md) - All exit codes explained (including detach mode)
 - [Pattern Matching Reference](docs/REGEX_REFERENCE.md) - Regex patterns & examples

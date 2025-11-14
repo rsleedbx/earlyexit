@@ -391,7 +391,8 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                    source_file_container: Optional[list] = None, post_match_lines: Optional[list] = None,
                    log_file=None, lines_processed: Optional[list] = None,
                    success_pattern: Optional[Pattern] = None, match_type: Optional[list] = None,
-                   stuck_detected: Optional[list] = None):
+                   stuck_detected: Optional[list] = None,
+                   last_stderr_time: Optional[list] = None, stderr_seen: Optional[list] = None):
     """
     Process a stream (stdout or stderr) line by line
     
@@ -487,6 +488,13 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
             # Track first output time for this specific stream
             if first_stream_time is not None and first_stream_time[0] == 0.0:
                 first_stream_time[0] = current_time
+            
+            # Track stderr-specific timing (for --stderr-idle-exit)
+            # Update if last_stderr_time is provided (indicates this is stderr stream)
+            if last_stderr_time is not None:
+                last_stderr_time[0] = current_time
+                if stderr_seen is not None:
+                    stderr_seen[0] = True
             
             line_number += 1
             line_stripped = line.rstrip('\n')
@@ -818,6 +826,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
     first_output_seen = [False]
     first_stdout_time = [0.0]  # Timestamp when first stdout line occurs
     first_stderr_time = [0.0]  # Timestamp when first stderr line occurs
+    last_stderr_time = [0.0]  # Timestamp of last stderr output
+    stderr_seen = [False]  # Track if we've seen any stderr output
     match_timestamp = [0]  # Timestamp of first match (for delay-exit)
     
     # Source file container (mutable, can be updated from output)
@@ -908,6 +918,34 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 if time_since_output >= args.idle_timeout:
                     timeout_callback(f"no output for {args.idle_timeout}s")
                     break
+            
+            # Check every 100ms
+            time.sleep(0.1)
+    
+    def check_stderr_idle():
+        """Monitor thread to check for stderr idle timeout"""
+        while process.poll() is None and not timed_out[0]:
+            # Wait until we've seen stderr output
+            if not stderr_seen[0]:
+                time.sleep(0.1)
+                continue
+            
+            current_time = time.time()
+            time_since_stderr = current_time - last_stderr_time[0]
+            
+            # If stderr has been idle for the specified time, exit
+            if time_since_stderr >= args.stderr_idle_exit:
+                timed_out[0] = True
+                timeout_reason[0] = f"stderr idle for {args.stderr_idle_exit}s"
+                if not args.quiet:
+                    print(f"\n⏸️  Stderr idle: No stderr output for {args.stderr_idle_exit}s (error messages complete)", file=sys.stderr)
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                break
             
             # Check every 100ms
             time.sleep(0.1)
@@ -1027,6 +1065,12 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             output_timeout_thread = threading.Thread(target=check_output_timeouts, daemon=True)
             output_timeout_thread.start()
         
+        # Start stderr idle monitor thread if needed
+        stderr_idle_thread = None
+        if args.stderr_idle_exit:
+            stderr_idle_thread = threading.Thread(target=check_stderr_idle, daemon=True)
+            stderr_idle_thread.start()
+        
         # Monitor streams based on configuration
         threads = []
         
@@ -1065,6 +1109,9 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                     log_f = stdout_log_file if fn == 1 else stderr_log_file if fn == 2 else None
                     # Determine which first-time tracker to use
                     first_time = first_stdout_time if fn == 1 else first_stderr_time if fn == 2 else None
+                    # Determine stderr tracking (only for fd 2)
+                    stderr_time = last_stderr_time if fn == 2 else None
+                    stderr_flag = stderr_seen if fn == 2 else None
                     def monitor():
                         try:
                             process_stream(s, pat, args, 0, match_count, use_color, lbl,
@@ -1072,7 +1119,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                          match_timestamp,
                                          telemetry_collector, execution_id, start_time, source_file_container,
                                          post_match_lines, log_f, statistics['lines_processed'],
-                                         success_pattern, match_type, stuck_detected)
+                                         success_pattern, match_type, stuck_detected,
+                                         stderr_time, stderr_flag)
                         except:
                             pass
                     return monitor
@@ -1459,7 +1507,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                  None, None, first_stderr_time,
                                  None, telemetry_collector, execution_id, start_time, source_file_container,
                                  post_match_lines, stderr_log_file, statistics['lines_processed'],
-                                 success_pattern, match_type, stuck_detected)
+                                 success_pattern, match_type, stuck_detected,
+                                 last_stderr_time, stderr_seen)
                 except:
                     pass
                 # Drain stdout
@@ -1480,7 +1529,8 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                                  None, None, first_stdout_time,
                                  None, telemetry_collector, execution_id, start_time, source_file_container,
                                  post_match_lines, stdout_log_file, statistics['lines_processed'],
-                                 success_pattern, match_type, stuck_detected)
+                                 success_pattern, match_type, stuck_detected,
+                                 None, None)
                 except:
                     pass
                 # Drain stderr (only if we didn't detach)
@@ -1955,6 +2005,10 @@ Exit codes (Unix convention, --unix-exit-codes):
     parser.add_argument('--stuck-ignore-timestamps', action='store_true',
                        help='Strip common timestamp patterns when checking for repeated lines (requires --max-repeat). '
                             'Normalizes timestamps like [HH:MM:SS], YYYY-MM-DD, etc.')
+    parser.add_argument('--stderr-idle-exit', type=float, metavar='SECONDS',
+                       help='Exit after stderr has been idle for N seconds (after seeing stderr output). '
+                            'Useful for detecting when error messages have finished printing. '
+                            'Use --exclude to filter out non-error stderr output (warnings, debug logs).')
     parser.add_argument('--no-telemetry', action='store_true',
                        help='Disable telemetry collection (also: EARLYEXIT_NO_TELEMETRY=1). No SQLite database created when disabled.')
     parser.add_argument('-P', '--perl-regexp', action='store_true',
@@ -2686,7 +2740,8 @@ Exit codes (Unix convention, --unix-exit-codes):
                                             match_timestamp,
                                             telemetry_collector, execution_id, telemetry_start_time, source_file_container,
                                             post_match_lines, None, None, 
-                                            success_pattern=None, match_type=match_type, stuck_detected=stuck_detected)
+                                            success_pattern=None, match_type=match_type, stuck_detected=stuck_detected,
+                                            last_stderr_time=None, stderr_seen=None)
             
             # Stop monitoring thread
             stop_reading[0] = True

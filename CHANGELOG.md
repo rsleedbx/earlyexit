@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.5] - 2024-11-14
+
+### Added
+
+#### Stuck/No-Progress Detection
+- **`--max-repeat NUM`**: Exit if the same line repeats NUM times consecutively
+  - Simple exact match comparison
+  - Detects when commands produce output but make no progress
+  - Exit code: 2 (stuck detected, same as timeout)
+  
+- **`--stuck-ignore-timestamps`**: Strip common timestamp patterns before comparing lines
+  - Normalizes: `[HH:MM:SS]`, `YYYY-MM-DD`, ISO 8601, Unix epoch, etc.
+  - Use with `--max-repeat` for smart stuck detection
+  - Example: Monitor commands showing "N/A" with changing timestamps
+  - Real-world savings: ~29 minutes per stuck instance
+
+#### Stderr Idle Exit
+- **`--stderr-idle-exit SECONDS`**: Exit after stderr has been idle for N seconds
+  - Monitors stderr specifically (after seeing any stderr output)
+  - Detects when error messages finish printing but command hangs
+  - Perfect for Python/Node.js errors that don't exit
+  - Works with `--exclude` to filter warnings/debug logs
+  - Exit code: 2 (stderr idle timeout)
+  - Real-world savings: ~30 minutes per hanging error
+
+#### Environment Variable Export
+- **Auto-export log paths**: `source ~/.ee_env.$$` to access logs
+  - `$EE_STDOUT_LOG` - Path to stdout log file
+  - `$EE_STDERR_LOG` - Path to stderr log file
+  - `$EE_LOG_PREFIX` - Base log filename
+  - `$EE_EXIT_CODE` - Exit code of last `ee` run
+  - Shell-specific isolation (each session gets own env file)
+  - No more copy/pasting PIDs!
+
+### Documentation
+- Added Problem 12: Stuck/No-Progress Detection
+- Added Problem 13: Error Messages Finish But Command Hangs
+- Updated feature lists (13 real-world scenarios)
+- Added timestamp normalization details (what IS and IS NOT stripped)
+- Strong AI agent guidance for proper usage patterns
+- Parameter order consistency across all examples
+
+### Tests
+- Comprehensive stuck detection tests (basic, timestamp normalization, edge cases)
+- Manual testing for stderr idle exit
+- All existing tests still passing
+
 ## [0.0.4] - 2024-11-14
 
 ### Added
