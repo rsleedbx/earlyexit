@@ -476,6 +476,16 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
     strip_timestamps = getattr(args, 'stuck_ignore_timestamps', False)
     stuck_pattern = getattr(args, 'stuck_pattern', None)
     
+    # Progress detection: track parts that SHOULD change (inverse stuck)
+    progress_pattern = getattr(args, 'progress_pattern', None)
+    last_progress_value = None
+    progress_repeat_count = 0
+    
+    # Transition detection: track state machine (forward-only)
+    transition_states = getattr(args, 'transition_states', None)
+    state_order = transition_states.split('>') if transition_states else []
+    last_state_index = -1
+    
     # Context buffer for capturing lines before matches (like grep -B)
     context_buffer = []
     context_size = getattr(args, 'before_context', 0)  # Number of lines to keep
@@ -548,6 +558,58 @@ def process_stream(stream: IO, pattern: Optional[Pattern], args, line_number_off
                 else:
                     repeat_count = 1
                     last_normalized_line = normalized_line
+            
+            # Progress detection: check if parts that SHOULD change are NOT changing
+            if max_repeat and progress_pattern:
+                try:
+                    import re
+                    match = re.search(progress_pattern, line_stripped)
+                    if match:
+                        current_progress = match.group(0)
+                        
+                        if current_progress == last_progress_value and current_progress:
+                            progress_repeat_count += 1
+                            if progress_repeat_count >= max_repeat:
+                                # No progress detected!
+                                if not args.quiet:
+                                    print(f"\n🔁 No progress detected: Counters stuck at \"{current_progress}\" ({progress_repeat_count} times)", file=sys.stderr)
+                                    print(f"   Full line: {line_stripped}", file=sys.stderr)
+                                    print(f"   Expected: This part should change over time", file=sys.stderr)
+                                # Set stuck flag and break
+                                if stuck_detected is not None:
+                                    stuck_detected[0] = True
+                                break
+                        else:
+                            progress_repeat_count = 1
+                            last_progress_value = current_progress
+                except Exception:
+                    pass  # Invalid regex or other error, ignore
+            
+            # Transition detection: check if state moved backward
+            if max_repeat and transition_states and state_order:
+                try:
+                    import re
+                    # Try to find any of the states in the line
+                    for state in state_order:
+                        if re.search(r'\b' + re.escape(state) + r'\b', line_stripped):
+                            current_index = state_order.index(state)
+                            
+                            # Check if we went backward
+                            if last_state_index >= 0 and current_index < last_state_index:
+                                # Regression detected!
+                                if not args.quiet:
+                                    print(f"\n🔴 Regression detected: State transition {state_order[last_state_index]} → {state}", file=sys.stderr)
+                                    print(f"   Full line: {line_stripped}", file=sys.stderr)
+                                    print(f"   Expected: Forward progress only ({' → '.join(state_order)})", file=sys.stderr)
+                                # Set stuck flag and break
+                                if stuck_detected is not None:
+                                    stuck_detected[0] = True
+                                break
+                            
+                            last_state_index = current_index
+                            break  # Found a state, stop looking
+                except Exception:
+                    pass  # Invalid regex or other error, ignore
             
             # Maintain context buffer (ring buffer of last N lines) for -B/--before-context
             if context_size > 0:
@@ -2067,6 +2129,14 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Extract specific part of line to check for repeating (requires --max-repeat). '
                             'Example: "RUNNING\\s+IDLE\\s+\\d+\\s+N/A" watches only status indicators. '
                             'If pattern matches, uses the match for comparison. If not, uses full line.')
+    parser.add_argument('--progress-pattern', metavar='REGEX',
+                       help='Extract parts that SHOULD change (inverse stuck detection, requires --max-repeat). '
+                            'Example: "\\d+\\s+\\d+\\s+\\d+" watches counters. Stuck if extracted part does NOT change. '
+                            'Use for detecting when progress indicators stop advancing.')
+    parser.add_argument('--transition-states', metavar='STATES',
+                       help='Define forward-only state transitions (requires --max-repeat). '
+                            'Format: "STATE1>STATE2>STATE3" (e.g., "IDLE>RUNNING>COMPLETED"). '
+                            'Detects regressions when state moves backward in the sequence.')
     parser.add_argument('--stderr-idle-exit', type=float, metavar='SECONDS',
                        help='Exit after stderr has been idle for N seconds (after seeing stderr output). '
                             'Useful for detecting when error messages have finished printing. '

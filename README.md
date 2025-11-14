@@ -173,7 +173,7 @@ ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit cod
 - ✅ **Success/Error pattern matching** - Early exit on success OR error
 - 🚫 **Pattern exclusions** - Filter out false positives
 - 🧪 **Pattern testing mode** - Test patterns against logs without running commands
-- 🔁 **Stuck/no-progress detection** - Auto-exit when same line repeats (with timestamp normalization and pattern extraction)
+- 🔁 **Advanced stuck detection** - 4 types: repeating lines, stuck status, no progress (counters), state regressions
 - ⏸️ **Stderr idle exit** - Auto-exit when error messages finish (stderr goes quiet)
 
 ### Unique Capabilities
@@ -873,22 +873,118 @@ ee --stuck-pattern 'Building:\s*\S+' --max-repeat 10 'Completed' -- build-tool
 ee --stuck-pattern '"status":\s*"\w+"' --max-repeat 5 'success' -- api-monitor
 ```
 
-**Combining all detection methods:**
+#### Advanced: `--progress-pattern` for Inverse Stuck Detection
+
+**Problem:** Parts that **SHOULD change** are NOT changing (no progress):
+
+```
+# Counters should be increasing, but they're NOT:
+job-123   12   15   6   | RUNNING [10:35:24]
+job-123   12   15   6   | RUNNING [10:35:31]
+job-123   12   15   6   | RUNNING [10:35:40]  ← Counters stuck!
+```
+
+**Solution: Detect when progress indicators stop advancing**:
 
 ```bash
-# Comprehensive: all early-exit detection enabled
-ee -t 300 -I 60 \
-  --max-repeat 8 --stuck-pattern 'STATE:\s*\w+' \
+# Watch counters, stuck if they DON'T change
+ee --max-repeat 3 --progress-pattern '\d+\s+\d+\s+\d+' 'RUNNING' -- command
+
+# Output:
+# 🔁 No progress detected: Counters stuck at "12 15 6" (3 times)
+#    Full line: job-123 12 15 6 | RUNNING [10:35:40]
+#    Expected: This part should change over time
+```
+
+**How it works:**
+1. `--progress-pattern REGEX` extracts parts that should be changing
+2. If extracted part **does NOT change** for N repeats → No progress detected!
+3. Opposite of `--stuck-pattern` (which detects parts that repeat)
+
+**Real-world examples:**
+
+```bash
+# Database: row counts should increase
+ee --progress-pattern 'rows:\s*\d+' --max-repeat 5 'ERROR' -- db-sync
+
+# Build: file numbers should advance
+ee --progress-pattern '\d+/\d+\s+files' --max-repeat 8 'Complete' -- build
+
+# Download: bytes should increase
+ee --progress-pattern '\d+\s+bytes' --max-repeat 10 'Done' -- download
+```
+
+#### Advanced: `--transition-states` for State Machine Detection
+
+**Problem:** States moving **backward** (regression):
+
+```
+# Forward progress:
+job state: IDLE [10:35:24]      ← State 0
+job state: RUNNING [10:35:31]   ← State 1 (forward ✅)
+job state: IDLE [10:35:40]      ← State 0 (backward ❌)
+```
+
+**Solution: Define forward-only state progression**:
+
+```bash
+# Define state order: IDLE → RUNNING → COMPLETED
+ee --max-repeat 3 --transition-states 'IDLE>RUNNING>COMPLETED' 'state' -- command
+
+# Output (when regression occurs):
+# 🔴 Regression detected: State transition RUNNING → IDLE
+#    Full line: job state: IDLE [10:35:40]
+#    Expected: Forward progress only (IDLE → RUNNING → COMPLETED)
+```
+
+**How it works:**
+1. `--transition-states 'A>B>C'` defines allowed forward progression
+2. If state moves backward in sequence → Regression detected!
+3. Staying in same state or skipping ahead is OK
+
+**Real-world examples:**
+
+```bash
+# Deployment: should progress forward only
+ee --transition-states 'Pending>Running>Succeeded' 'status' -- kubectl rollout status
+
+# Database migration: one-way state progression
+ee --transition-states 'pending>running>committed' 'state' -- db-migrate
+
+# Job lifecycle: detect job restarts
+ee --transition-states 'queued>running>completed' 'job' -- job-monitor
+```
+
+#### Combining All Four Detection Types
+
+```bash
+# Comprehensive: all advanced stuck detection enabled
+ee -t 300 -I 60 --max-repeat 5 \
+  --stuck-pattern 'RUNNING\s+IDLE' \
+  --progress-pattern '\d+\s+\d+\s+\d+' \
+  --transition-states 'IDLE>RUNNING>COMPLETED' \
   --stderr-idle-exit 2 \
   --progress --unix-exit-codes \
   -- command
 
-# Exit early on:
-# - Timeout (-t 300): 5 minutes max
-# - Idle (-I 60): 60 seconds no output
-# - Stuck (--max-repeat 8): STATE repeats 8 times
-# - Stderr idle (--stderr-idle-exit 2): errors finish, 2s idle
+# Exit early on ANY of these conditions:
+# 1. Timeout (-t 300): 5 minutes max
+# 2. Idle (-I 60): 60 seconds no output
+# 3. Stuck status (--stuck-pattern): "RUNNING IDLE" repeats 5 times
+# 4. No progress (--progress-pattern): Counters don't change 5 times
+# 5. Regression (--transition-states): State moves backward
+# 6. Stderr idle (--stderr-idle-exit 2): Errors finish, 2s idle
 ```
+
+**Decision tree for choosing detection type:**
+
+| Output Pattern | Detection Type | Use |
+|----------------|----------------|-----|
+| Entire line repeats | `--max-repeat` | Basic stuck detection |
+| Line repeats except timestamps | `--max-repeat --stuck-ignore-timestamps` | Most logs |
+| Status repeats, counters change | `--stuck-pattern` | Watch status only |
+| **Counters stuck, status changes** | **`--progress-pattern`** | **Watch progress only** |
+| **State moves backward** | **`--transition-states`** | **Forward-only states** |
 
 ---
 
