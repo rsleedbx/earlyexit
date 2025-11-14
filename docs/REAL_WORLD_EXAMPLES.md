@@ -1098,5 +1098,206 @@ Real examples from this document show consistent complexity reduction:
 3. **Add exclusions for false positives**
 4. **Deploy with confidence**
 
+---
+
+## Problem 14: Stuck Detection with Changing Counters (Advanced)
+
+### ❌ The Problem (Basic stuck detection fails)
+
+A monitoring command shows **changing progress counters** but the **status is stuck**:
+
+```bash
+# Mist job monitor output
+mist dml monitor --id rble-3089186959 --session rb_le-691708f8 --interval 10
+
+# Output:
+rble-308   13   12       15       6        | RUNNING         IDLE            2    N/A           [10:35:24]
+rble-308   13   14       16       7        | RUNNING         IDLE            2    N/A           [10:35:31]
+rble-308   13   15       19       7        | RUNNING         IDLE            2    N/A           [10:35:40]
+rble-308   13   17       20       8        | RUNNING         IDLE            2    N/A           [10:35:47]
+rble-308   13   18       22       9        | RUNNING         IDLE            2    N/A           [10:35:55]
+rble-308   13   19       23       10       | RUNNING         IDLE            2    N/A           [10:36:02]
+# ... (stuck in IDLE state for 30 minutes despite counters changing!)
+```
+
+**Analysis:**
+- **LEFT**: Numbers changing (12→14→15→17...) = Progress indicators
+- **MIDDLE**: `RUNNING IDLE 2 N/A` = **NOT CHANGING** (STUCK!)
+- **RIGHT**: Timestamp changing = Progress indicators
+
+**Why basic stuck detection fails:**
+
+```bash
+# ❌ Basic --max-repeat: Lines are different (counters change)
+ee --max-repeat 5 'ERROR' -- mist dml monitor ...
+# Doesn't trigger! Lines are different.
+
+# ❌ With --stuck-ignore-timestamps: Still different (counters change)
+ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- mist dml monitor ...
+# Doesn't trigger! After removing timestamps, counters still differ.
+```
+
+**The core problem:**
+- Progress indicators (counters, timestamps) **change**
+- But the actual status (`RUNNING IDLE`) is **stuck**
+- Need to watch **ONLY the status part**, ignore counters
+
+### ✅ The Solution (ee with --stuck-pattern)
+
+**Step 1: Identify what should NOT change (the stuck indicator)**
+
+```
+rble-308   13   12  15   6   | RUNNING  IDLE  2  N/A  [10:35:24]
+rble-308   13   14  16   7   | RUNNING  IDLE  2  N/A  [10:35:31]
+               ^^  ^^   ^         ^^^^  ^^^^          
+            CHANGING           NOT CHANGING (STUCK!)
+```
+
+**Key insight:** Watch `RUNNING IDLE 2 N/A` (status), ignore counters/timestamps.
+
+**Step 2: Extract the stuck indicator with regex**
+
+```bash
+# Extract and watch ONLY the status part
+ee -t 120 --max-repeat 5 \
+  --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' \
+  'ERROR|SUCCESS' \
+  -- mist dml monitor --id rble-3089186959 --session rb_le-691708f8 --interval 10
+
+# Output after 5 repeats (~50 seconds):
+rble-308   13   12  15   6   | RUNNING  IDLE  2  N/A  [10:35:24]
+rble-308   13   14  16   7   | RUNNING  IDLE  2  N/A  [10:35:31]
+rble-308   13   15  19   7   | RUNNING  IDLE  2  N/A  [10:35:40]
+rble-308   13   17  20   8   | RUNNING  IDLE  2  N/A  [10:35:47]
+
+🔁 Stuck detected: Same line repeated 5 times (watching pattern)
+   Watched part: RUNNING IDLE 2 N/A    ← Only this part checked
+   Full line: rble-308 13 18 22 9 | RUNNING IDLE 2 N/A [10:35:55]
+
+# Exit code: 2 (stuck detected)
+```
+
+**How it works:**
+1. `--stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A'` extracts the status part
+2. For each line:
+   - Extract: `RUNNING IDLE 2 N/A`
+   - Compare: Same as previous line's extracted part?
+3. If status repeats 5 times → **Stuck detected!** (Exit immediately)
+
+### Comparison
+
+| Approach | Detects Stuck? | Time to Exit | Why? |
+|----------|---------------|--------------|------|
+| **`--max-repeat 5`** | ❌ No | 30+ minutes (timeout) | Counters change, lines differ |
+| **`--max-repeat 5 --stuck-ignore-timestamps`** | ❌ No | 30+ minutes (timeout) | Counters still change |
+| **`--max-repeat 5 --stuck-pattern 'RUNNING\s+IDLE...'`** | ✅ Yes | ~50 seconds | **Watches status only!** |
+
+### Real-World Use Cases for `--stuck-pattern`
+
+```bash
+# 1. Database sync: row counts change, state stuck
+ee --stuck-pattern 'state:\s*\w+' --max-repeat 8 'ERROR' -- db-sync-monitor
+# Watches: "state: syncing"
+# Ignores: Row counts, timestamps
+
+# 2. Kubernetes: timestamps change, pod status stuck
+ee --stuck-pattern 'Status:\s*Pending' --max-repeat 10 'Running' -- kubectl get pods -w
+# Watches: "Status: Pending"
+# Ignores: Timestamps, restart counts
+
+# 3. Build system: file counts change, task stuck
+ee --stuck-pattern 'Compiling:\s*\S+\.rs' --max-repeat 5 'Finished' -- cargo build
+# Watches: "Compiling: main.rs" (stuck on same file)
+# Ignores: Progress counters (15/120 files)
+
+# 4. API polling: request IDs change, status stuck
+ee --stuck-pattern '"status":\s*"\w+"' --max-repeat 8 'success' -- api-monitor
+# Watches: '"status": "pending"'
+# Ignores: Request IDs, timestamps
+```
+
+### How to Create Your Own Stuck Pattern (AI Guide)
+
+**Step 1: Analyze the output**
+
+Ask these questions:
+
+| Question | Example Answer | Action |
+|----------|---------------|--------|
+| What SHOULD change when making progress? | Counters, timestamps, request IDs | **Ignore these** |
+| What SHOULDN'T change when making progress? | Status, state, error message | **Watch this!** |
+| What part repeats when truly stuck? | "RUNNING IDLE 2 N/A" | **Extract this** |
+
+**Step 2: Choose the right detection method**
+
+| Output Pattern | Detection Method |
+|----------------|------------------|
+| Entire line repeats (no timestamps/counters) | `--max-repeat N` |
+| Line repeats except timestamps | `--max-repeat N --stuck-ignore-timestamps` |
+| **Counters change + status stuck** | **`--max-repeat N --stuck-pattern 'REGEX'`** |
+
+**Step 3: Create the regex**
+
+```bash
+# Identify the repeating part
+# Example: "RUNNING IDLE 2 N/A"
+
+# Create regex to match it (use \s+ for whitespace, \d+ for numbers)
+PATTERN='RUNNING\s+IDLE\s+\d+\s+N/A'
+
+# Test it first
+cat logfile | ee --stuck-pattern "$PATTERN" 'RUNNING' --test-pattern
+
+# Deploy in production
+ee -t 300 --max-repeat 5 --stuck-pattern "$PATTERN" 'ERROR|SUCCESS' -- command
+```
+
+### Best Practices
+
+1. **Start simple, then refine:**
+   ```bash
+   # 1. Try basic repeat detection first
+   ee --max-repeat 5 'ERROR' -- command
+   
+   # 2. If timestamps cause false negatives, add normalization
+   ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
+   
+   # 3. If counters cause false negatives, use stuck-pattern
+   ee --max-repeat 5 --stuck-pattern 'STATUS_REGEX' 'ERROR' -- command
+   ```
+
+2. **Test pattern extraction with `--test-pattern`:**
+   ```bash
+   # Verify your pattern extracts the right part
+   cat logfile | ee --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' 'RUNNING' --test-pattern
+   ```
+
+3. **Use with comprehensive detection:**
+   ```bash
+   # All detection methods enabled
+   ee -t 300 -I 60 \
+     --max-repeat 5 --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' \
+     --stderr-idle-exit 2 \
+     --progress --unix-exit-codes \
+     -- mist dml monitor --id xyz
+   ```
+
+### Real-World Savings
+
+**Mist job monitor example:**
+- ⏱️ **Before**: Waited 30 minutes for timeout
+- 🚀 **After**: Exits in ~50 seconds (5 repeats × 10s interval)
+- 💰 **Savings**: ~29 minutes per stuck instance
+- 🎯 **Exit code**: 2 (stuck detected, distinguishable from other failures)
+- 📊 **Logs**: Automatically captured for debugging
+
+**CI/CD pipeline example:**
+- ⏱️ **Before**: Pipeline timeout after 60 minutes (wasted CI time)
+- 🚀 **After**: Stuck detected in 2-3 minutes, fast-fail
+- 💰 **Savings**: ~57 minutes of CI compute time
+- 🔁 **Retry logic**: Can distinguish stuck from timeout, adjust retry strategy
+
+---
+
 See [README.md](../README.md) for installation and complete documentation.
 

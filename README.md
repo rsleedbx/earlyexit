@@ -310,7 +310,7 @@ ee --success-pattern 'successfully rolled out' \
    -- kubectl rollout status deployment/myapp
 ```
 
-[**See 13 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
+[**See 14 more real-world examples →**](docs/REAL_WORLD_EXAMPLES.md)
 
 ---
 
@@ -947,7 +947,7 @@ ee --stderr-idle-exit 1 'SUCCESS' -- mist dml monitor --id xyz
 ## Documentation
 
 ### 📖 User Guides
-- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 13 scenarios where `ee` excels over `grep`
+- [**Real-World Examples**](docs/REAL_WORLD_EXAMPLES.md) - 14 scenarios where `ee` excels over `grep`
 - [**Complete User Guide**](docs/USER_GUIDE.md) - Comprehensive usage examples
 - [**Exit Codes Reference**](docs/EXIT_CODES.md) - All exit codes explained (including detach mode)
 - [Pattern Matching Reference](docs/REGEX_REFERENCE.md) - Regex patterns & examples
