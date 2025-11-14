@@ -112,6 +112,78 @@ ee -B 3 -A 10 'pattern' command
 
 **Note:** `ee -A` is time-based (seconds) not line-based, which is better for capturing full error traces.
 
+## 📝 Accessing Log Files (CRITICAL for AI Agents)
+
+When `ee` runs with a timeout, it **automatically saves logs** and creates environment variables for easy access.
+
+### The Pattern (ALWAYS use this after `ee` with timeout)
+
+```bash
+# Step 1: Run ee with timeout
+ee -t 60 'ERROR|success' -- mist dml monitor --id xyz --session rb_le-123
+
+# Step 2: Load environment variables (CRITICAL!)
+source ~/.ee_env.$$
+
+# Step 3: Use the variables (no copy/paste needed!)
+cat $EE_STDOUT_LOG | ee 'ERROR' --test-pattern
+cat $EE_STDERR_LOG | ee 'WARNING' --test-pattern
+```
+
+### Why This Matters
+
+**❌ WITHOUT sourcing (AI makes mistakes):**
+```bash
+ee -t 60 'ERROR' -- mist dml monitor ...
+# AI tries to remember or copy/paste the log path:
+cat /tmp/ee-mist_dml_monitor-12345.log | ee 'ERROR' --test-pattern
+# Problem: Must track the PID, easy to make errors
+```
+
+**✅ WITH sourcing (AI doesn't make mistakes):**
+```bash
+ee -t 60 'ERROR' -- mist dml monitor ...
+source ~/.ee_env.$$
+cat $EE_STDOUT_LOG | ee 'ERROR' --test-pattern
+# Simple pattern, always works!
+```
+
+### Variables Available
+
+After `source ~/.ee_env.$$`:
+- `$EE_STDOUT_LOG` - Path to stdout log file
+- `$EE_STDERR_LOG` - Path to stderr log file
+- `$EE_LOG_PREFIX` - Base log filename (without .log/.errlog)
+- `$EE_EXIT_CODE` - Exit code of the last `ee` run
+
+### Example: Full Workflow
+
+```bash
+# Exploration: Run and see what happens
+ee -t 60 'ERROR|success' -- mist dml monitor --id xyz
+source ~/.ee_env.$$
+
+# Analysis: Test patterns on the logs
+cat $EE_STDOUT_LOG | ee 'ERROR' --test-pattern
+
+# Refinement: Exclude false positives
+cat $EE_STDOUT_LOG | ee 'ERROR' --test-pattern --exclude 'retry'
+
+# Production: Deploy with optimized pattern
+ee -t 60 \
+  --success-pattern 'Success' \
+  --error-pattern 'ERROR' \
+  --exclude 'retry' \
+  -- mist dml monitor --id xyz
+```
+
+### Multi-Session Safety
+
+Each shell session gets its own env file (`~/.ee_env.$$`):
+- Shell 1 (PID 12345) → `~/.ee_env.12345`
+- Shell 2 (PID 67890) → `~/.ee_env.67890`
+- No conflicts between sessions!
+
 ## tail -100 Pattern (User Cancels Often)
 
 When Cursor suggests `cmd | tee | tail -100`, it's trying to show only the last 100 lines. But this is BROKEN:

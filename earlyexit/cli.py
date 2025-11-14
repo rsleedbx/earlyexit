@@ -47,6 +47,31 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Timeout exceeded")
 
 
+def update_ee_env_exit_code(exit_code: int):
+    """Update the exit code in the environment file for the current shell session."""
+    try:
+        parent_pid = os.getppid()
+        ee_env_file = os.path.expanduser(f"~/.ee_env.{parent_pid}")
+        # Only update if file exists (log files were created)
+        if os.path.exists(ee_env_file):
+            # Read existing content
+            with open(ee_env_file, 'r') as f:
+                lines = f.readlines()
+            # Update or add exit code
+            with open(ee_env_file, 'w') as f:
+                exit_code_written = False
+                for line in lines:
+                    if line.startswith('export EE_EXIT_CODE='):
+                        f.write(f"export EE_EXIT_CODE={exit_code}\n")
+                        exit_code_written = True
+                    else:
+                        f.write(line)
+                if not exit_code_written:
+                    f.write(f"export EE_EXIT_CODE={exit_code}\n")
+    except Exception:
+        pass  # Silent failure
+
+
 def map_exit_code(code: int, use_unix_convention: bool) -> int:
     """
     Map exit codes based on convention.
@@ -68,6 +93,9 @@ def map_exit_code(code: int, use_unix_convention: bool) -> int:
         4 = detached                   4 = detached (unchanged)
         130 = interrupted              130 = interrupted (unchanged)
     """
+    # Update environment file with exit code
+    update_ee_env_exit_code(code)
+    
     if not use_unix_convention:
         return code  # Keep grep convention (current behavior)
     
@@ -683,6 +711,22 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
                 print(f"📝 Logging to{mode_msg}:", file=sys.stderr)
                 print(f"   stdout: {stdout_log_path}", file=sys.stderr)
                 print(f"   stderr: {stderr_log_path}", file=sys.stderr)
+            
+            # Write environment variables to ~/.ee_env.$$ for easy access
+            # Each shell session gets its own env file (isolated by parent PID)
+            try:
+                parent_pid = os.getppid()
+                ee_env_file = os.path.expanduser(f"~/.ee_env.{parent_pid}")
+                with open(ee_env_file, 'w') as f:
+                    f.write("# earlyexit environment variables (auto-generated)\n")
+                    f.write("# Load with: source ~/.ee_env.$$\n")
+                    f.write(f"export EE_STDOUT_LOG='{stdout_log_path}'\n")
+                    f.write(f"export EE_STDERR_LOG='{stderr_log_path}'\n")
+                    if log_prefix:
+                        f.write(f"export EE_LOG_PREFIX='{log_prefix}'\n")
+            except Exception:
+                pass  # Silent failure if can't write env file
+                
         except Exception as e:
             if not args.quiet:
                 print(f"⚠️  Warning: Could not create log files: {e}", file=sys.stderr)

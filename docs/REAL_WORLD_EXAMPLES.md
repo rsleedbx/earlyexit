@@ -695,17 +695,19 @@ timeout 60 mist dml monitor 2>&1 | tee /tmp/monitor.log
 
 ```bash
 # Don't know what pattern to watch for yet - just explore
-# Use --file-prefix for predictable log names (easier to type later)
-ee -t 60 --file-prefix /tmp/mist-monitor 'ERROR|success|completed' -- \
+ee -t 60 'ERROR|success|completed' -- \
   mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
+
+# Load the log paths (ee automatically creates ~/.ee_env.$$)
+source ~/.ee_env.$$
 ```
 
 **What you'll see** (ee automatically prints log locations at the start):
 
 ```
 📝 Logging to:
-   stdout: /tmp/mist-monitor.log
-   stderr: /tmp/mist-monitor.errlog
+   stdout: /tmp/ee-mist_dml_monitor-12345.log
+   stderr: /tmp/ee-mist_dml_monitor-12345.errlog
 
 Starting monitor...
 Checking status...
@@ -718,17 +720,13 @@ ERROR: Max retries exceeded
 ⏱️  Timeout: No pattern matched in 60 seconds
 ```
 
-> **Tip**: Using `--file-prefix` gives you a predictable filename (no PID), making it easy to reference later without copy/pasting.
+> **Tip**: After running `ee`, use `source ~/.ee_env.$$` to load `$EE_STDOUT_LOG` and `$EE_STDERR_LOG` variables. No need to copy/paste paths!
 
 #### Step 2: Analysis (Pattern Testing)
 
 ```bash
-# Now analyze the saved logs (easy to type!)
-cat /tmp/mist-monitor.log | ee 'ERROR|error' --test-pattern
-
-# Or use a shell variable for convenience
-LOG=/tmp/mist-monitor.log
-cat $LOG | ee 'ERROR|error' --test-pattern
+# Now analyze the saved logs (use the environment variable!)
+cat $EE_STDOUT_LOG | ee 'ERROR|error' --test-pattern
 ```
 
 **Output:**
@@ -750,12 +748,9 @@ Line 234: ERROR: Max retries exceeded
 
 ```bash
 # Retries are expected (not real errors) - exclude them
-cat /tmp/mist-monitor.log | ee 'ERROR|error' \
+cat $EE_STDOUT_LOG | ee 'ERROR|error' \
   --test-pattern \
   --exclude 'retry attempt'
-
-# With variable (even cleaner)
-cat $LOG | ee 'ERROR|error' --test-pattern --exclude 'retry attempt'
 ```
 
 **Output:**
@@ -776,18 +771,18 @@ Line 234: ERROR: Max retries exceeded
 ```bash
 # Now we know exactly what to watch for - deploy with confidence
 ee -t 60 \
-  --file-prefix /tmp/mist-monitor \
   --success-pattern 'Monitor started successfully' \
   --error-pattern 'Connection timeout|Max retries exceeded' \
   --exclude 'retry attempt' \
   -- mist dml monitor --id rble-3087789530 --session rb_le-691708f8 --interval 15
 
 # Exits immediately when success or real error is detected
-# Logs are still saved to /tmp/mist-monitor.log for debugging
+# Logs are still auto-saved, load with: source ~/.ee_env.$$
 ```
 
 **Why ee wins:**
 - ✅ **Auto-logging**: Logs saved automatically with timeout
+- ✅ **Auto-export**: Environment variables created (`$EE_STDOUT_LOG`, `$EE_STDERR_LOG`)
 - ✅ **Pattern testing**: Test against saved logs (no re-runs)
 - ✅ **Rapid iteration**: Refine patterns in seconds
 - ✅ **Production ready**: Deploy optimized patterns with confidence
@@ -802,7 +797,8 @@ ee -t 60 \
 | **Real-time output?** | ❌ No (block buffering) | ✅ Yes (unbuffered) |
 | **Early exit?** | ❌ No (waits full timeout) | ✅ Yes (on pattern match) |
 | **Log location shown?** | ❌ No | ✅ Yes (printed at start) |
-| **Predictable filenames?** | ❌ Must use `tee` manually | ✅ Yes (`--file-prefix`) |
+| **Easy to reference?** | ❌ Must copy/paste paths | ✅ Yes (`source ~/.ee_env.$$`) |
+| **Environment variables?** | ❌ No | ✅ Yes (`$EE_STDOUT_LOG`, `$EE_STDERR_LOG`) |
 | **Iteration time** | ⭐ Must re-run command each time | ⭐⭐⭐⭐⭐ Test instantly against logs |
 
 **Smart Auto-Logging Rules:**
