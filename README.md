@@ -66,37 +66,80 @@ ee -t 600 'Error' terraform apply
 
 One command replaces `stdbuf + timeout + tee + grep + gzip` - with real-time output by default.
 
-**Near drop-in replacement for `grep`/`zgrep` on single files:**
+**Replaces `grep`/`egrep`/`zgrep` with time awareness, advanced patterns, and multi-stream monitoring:**
+
 ```bash
+# ========================================
+# grep/egrep/zgrep Compatibility
+# ========================================
 # Old way
 grep 'ERROR' file.log
+egrep 'ERROR|WARN' file.log
 zgrep 'ERROR' file.log.gz
 
-# New way (same syntax, more features)
+# New way (same syntax + time + patterns + multi-FD)
 ee 'ERROR' < file.log
-ee -Z 'ERROR' < file.log.gz  # Auto-detects compression
+ee 'ERROR|WARN' < file.log        # egrep syntax works
+ee -Z 'ERROR' < file.log.gz       # Auto-detects compression
+
+# ========================================
+# Time-Aware Features (grep can't do this)
+# ========================================
+# Exit after 5 minutes (don't wait forever)
+ee -t 300 'ERROR' terraform apply
+
+# Exit if no output for 60 seconds (hung process)
+ee -I 60 'ERROR' -- long-running-job
+
+# Exit if repeating same output (stuck/no progress)
+ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- sync-job
+
+# Exit when stderr goes quiet after errors
+ee --stderr-idle-exit 1 'SUCCESS' -- python-script
+
+# ========================================
+# Advanced Patterns (beyond grep)
+# ========================================
+# Exclude false positives (like grep -v but inline)
+ee --exclude 'retry' --exclude 'expected' 'ERROR' -- command
+
+# Success OR error patterns (early exit on either)
+ee --success-pattern 'Completed' --error-pattern 'ERROR' -- deploy
+
+# Allowlist: Define expected output (code you control)
+ee --expect 'Step 1' --expect 'Step 2' --expect-all -- script.sh
+
+# ========================================
+# Multi-Stream Monitoring (beyond stdin)
+# ========================================
+# Monitor multiple log files simultaneously
+ee --fd 3 --fd 4 'ERROR|WARN' -- \
+  command 3< /var/log/app.log 4< /var/log/metrics.log
+
+# Different patterns per stream
+ee --fd-pattern 3 'FATAL' --fd-pattern 4 'ALERT' -- \
+  monitor 3< critical.log 4< warnings.log
 ```
 
 ### What You Get
 
-| Feature | Replaces | Status |
-|---------|----------|--------|
-| Real-time output | `stdbuf` | ✅ Unbuffered by default |
-| Timeout management | `timeout` | ✅ Multiple timeout types |
-| Auto-logging | `tee` | ✅ Smart log files |
-| Pattern matching | `grep`/`zgrep` | ✅ Regex + early exit + grep flags (-A, -B, -C, -w, -x) |
-| Log compression | `gzip` | ✅ Built-in with `-z` |
-| **JSON output** | Custom scripts | ✅ `--json` for programmatic access |
-| **Progress indicator** | Custom status | ✅ `--progress` for live updates |
-| **Unix exit codes** | Manual mapping | ✅ `--unix-exit-codes` for scripting |
+| Feature | Replaces | `ee` Advantage |
+|---------|----------|----------------|
+| **Pattern matching** | `grep`/`egrep`/`zgrep` | ✅ + grep flags (-A, -B, -C, -i, -v, -w, -x) |
+| **Time awareness** | `timeout` | ✅ 4 types: overall, idle, first output, stderr idle |
+| **Pattern logic** | Multiple `grep \|` pipes | ✅ Include/exclude, success/error, expect/allowlist |
+| **Multi-stream** | stdin only | ✅ Monitor multiple FDs (stderr + custom FDs 3+) |
+| **Stuck detection** | N/A | ✅ Repeating output, unchanged status, no progress |
+| **Real-time output** | `stdbuf` | ✅ Unbuffered by default |
+| **Auto-logging** | `tee` | ✅ Smart log files with compression |
+| **Observability** | Custom scripts | ✅ JSON, progress, Unix exit codes |
 
-### Plus Three Unique Capabilities
+### Core Differentiators vs grep/egrep/zgrep
 
-> 🔥 **Stalled output detection** - Exits if no output for N seconds (catches hung processes)  
-> &nbsp;&nbsp;&nbsp;&nbsp;*Resets on every line of output - see [how it works](docs/TIMEOUT_BEHAVIOR_EXPLAINED.md)*  
-> &nbsp;&nbsp;&nbsp;&nbsp;*DIY is hard - see [alternatives comparison](docs/STALL_DETECTION_ALTERNATIVES.md)*  
-> 🔥 **Delayed exit** - Waits N seconds after error to capture full stack traces  
-> 🔥 **Interactive learning** - Learns patterns from your Ctrl+C behavior
+> ⏰ **Time-Aware** - Timeouts, idle detection, stuck detection, stderr idle exit  
+> 🎯 **Advanced Patterns** - Include/exclude, success/error, allowlist/blocklist  
+> 📡 **Multi-Stream** - Monitor stdout, stderr, and custom file descriptors  
+> 🚀 **Real-Time** - Unbuffered output by default (no waiting for 4KB blocks)
 
 **One command that takes you and your AI to the next level.** 🚀
 
@@ -108,30 +151,63 @@ ee -Z 'ERROR' < file.log.gz  # Auto-detects compression
 # Install (includes 'ee' alias)
 pip install earlyexit
 
-# Drop-in for grep/zgrep (single file usage)
+# ========================================
+# grep/egrep/zgrep Compatibility
+# ========================================
 ee 'ERROR' < app.log                    # Like grep
 ee -i 'error' < app.log                 # Case-insensitive (grep -i)
 ee -C 3 'ERROR' < app.log               # Context lines (grep -C)
-ee -Z 'ERROR' < app.log.gz              # Compressed files (like zgrep)
+ee 'ERROR|WARN' < app.log               # Extended regex (egrep)
+ee -Z 'ERROR' < app.log.gz              # Compressed files (zgrep)
 
-# Mode 1: Watch & Learn (no pattern needed)
-ee terraform apply
+# ========================================
+# Time-Aware Features (grep can't do this)
+# ========================================
+ee -t 300 'ERROR' terraform apply       # Exit after 5 min
+ee -I 60 'ERROR' -- long-job            # Exit if idle 60s
+ee --max-repeat 5 'ERROR' -- sync       # Exit if stuck (repeating)
+ee --stderr-idle-exit 1 'OK' -- script  # Exit when stderr quiet
+
+# ========================================
+# Advanced Patterns (beyond grep)
+# ========================================
+ee --exclude 'retry' 'ERROR' -- cmd     # Exclude false positives
+ee -s 'SUCCESS' -e 'ERROR' -- deploy    # Success OR error exit
+ee --expect 'Step 1' --expect 'Step 2' \
+   --expect-all -- script.sh            # Allowlist (code you control)
+
+# ========================================
+# Multi-Stream Monitoring (beyond stdin)
+# ========================================
+# Monitor multiple log files
+ee --fd 3 --fd 4 'ERROR|WARN' -- \
+  app 3< /var/log/app.log 4< /var/log/db.log
+
+# Different patterns per stream
+ee --fd-pattern 3 'FATAL' \
+   --fd-pattern 4 'TIMEOUT' -- \
+  monitor 3< critical.log 4< slow.log
+
+# ========================================
+# Command & Pipe Modes
+# ========================================
+ee 'ERROR|Error' terraform apply        # Command mode
+terraform apply 2>&1 | ee 'Error'       # Pipe mode
+
+# ========================================
+# Interactive Learning (opt-in)
+# ========================================
+ee --watch terraform apply              # Human learning mode
 # Press Ctrl+C when you see an error → it learns the pattern
 
-# Mode 2: Command Mode (apply what it learned)
-ee 'ERROR|Error' terraform apply
-
-# Mode 3: Pipe Mode (integrate with existing scripts)
-terraform apply 2>&1 | ee 'Error'
-
-# Bonus: Use profiles for common tools
-ee --profile terraform terraform apply
-ee --list-profiles  # See all available profiles
-
-# Observability features
-ee --progress -t 1800 'Error' terraform apply          # Live progress
-ee --json 'ERROR' -- pytest                            # JSON output
-ee --unix-exit-codes 'Error' -- command && echo "OK"   # Shell-friendly exit codes
+# ========================================
+# Profiles & Observability
+# ========================================
+ee --profile terraform terraform apply              # Presets for common tools
+ee --list-profiles                                  # See all available
+ee --progress -t 1800 'Error' terraform apply       # Live progress
+ee --json 'ERROR' -- pytest                         # JSON output
+ee --unix-exit-codes 'Error' -- cmd && echo "OK"    # Shell-friendly exit codes
 ```
 
 **That's it!** See [User Guide](docs/USER_GUIDE.md) for comprehensive examples and [Profile Guide](docs/QUICKSTART_WITH_PROFILES.md) for sharing patterns.
