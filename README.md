@@ -447,11 +447,12 @@ ee 'ERROR|FATAL|Exception|OutOfMemory' -- java -jar service.jar
 
 | Feature | Pipe Mode | Command Mode | Watch Mode |
 |---------|-----------|--------------|------------|
-| **Syntax** | `cmd \| ee 'pat'` | `ee 'pat' cmd` | `ee cmd` |
-| **Pattern** | Required | Required | Learns |
+| **Syntax** | `cmd \| ee 'pat'` | `ee 'pat' cmd` | `ee --watch cmd` |
+| **Pattern** | Required | Required | Optional (learns) |
 | **Chainable** | ✅ Middle of chain | ✅ Head of chain | ❌ No |
-| **Learning** | ❌ No | ❌ No | ✅ Yes |
-| **Best For** | Scripts/pipes | One-stop solution | Discovery |
+| **Learning** | ❌ No | ❌ No | ✅ Yes (interactive) |
+| **Requires** | Pattern | Pattern | `--watch` flag + human |
+| **Best For** | Scripts/pipes | Automation | Discovery/learning |
 
 [Detailed comparison with tests →](docs/MODE_COMPARISON.md)
 
@@ -498,11 +499,13 @@ ee -D 'Server listening' ./start-server.sh
 # PID printed to stderr for later cleanup
 ```
 
-### Mode 3: Watch Mode (Zero-Config Learning)
+### Mode 3: Watch Mode (Interactive Learning)
+
+**Explicitly opt-in with `--watch` flag. Requires human interaction.**
 
 ```bash
-# No pattern needed - learns from you
-ee terraform apply
+# Enable watch mode with --watch flag
+ee --watch terraform apply
 
 # Press Ctrl+C when you see an error:
 #   → Captures context
@@ -510,6 +513,17 @@ ee terraform apply
 #   → Saves for next time
 
 # Next run uses learned settings automatically
+ee 'ERROR|FAIL' terraform apply  # Uses learned pattern
+```
+
+**Important:** Watch mode is **not for automation** (AI agents, CI/CD). It requires human interaction (Ctrl+C). For automated scripts, use explicit patterns instead:
+
+```bash
+# ❌ Don't use in automation (requires human Ctrl+C)
+ee --watch command
+
+# ✅ Use explicit patterns for automation
+ee 'ERROR|FAIL' -- command
 ```
 
 [Mode examples & use cases →](docs/USER_GUIDE.md)

@@ -2144,6 +2144,11 @@ Exit codes (Unix convention, --unix-exit-codes):
     parser.add_argument('command', nargs='*',
                        help='Command to run (if not reading from stdin). Use -- to separate earlyexit flags from command flags.')
     
+    # Mode selection
+    parser.add_argument('--watch', action='store_true',
+                       help='Enable watch mode (interactive learning mode). Requires human interaction (Ctrl+C). '
+                            'Not for automated scripts or AI agents. Use explicit patterns instead.')
+    
     # === Arguments in alphabetical order (by long form) ===
     
     parser.add_argument('-a', '--append', action='store_true',
@@ -2486,42 +2491,20 @@ Exit codes (Unix convention, --unix-exit-codes):
         print("", file=sys.stderr)
         print("Usage:", file=sys.stderr)
         print("  earlyexit 'PATTERN' -- COMMAND [args...]    # With pattern", file=sys.stderr)
-        print("  earlyexit -- COMMAND [args...]              # No pattern (watch mode)", file=sys.stderr)
-        print("  earlyexit -t SECS -- COMMAND [args...]      # Timeout only, no pattern", file=sys.stderr)
+        print("  earlyexit --watch COMMAND [args...]          # Watch mode (interactive learning)", file=sys.stderr)
+        print("  earlyexit -t SECS 'PATTERN' -- COMMAND      # Timeout with pattern", file=sys.stderr)
         print("", file=sys.stderr)
         print("Examples:", file=sys.stderr)
         print("  earlyexit 'ERROR' -- ./my-script.sh", file=sys.stderr)
-        print("  earlyexit -- mist validate --id 123 --step 2", file=sys.stderr)
-        print("  earlyexit -t 30 -- ./long-script.sh", file=sys.stderr)
+        print("  earlyexit --watch mist validate --id 123 --step 2", file=sys.stderr)
+        print("  earlyexit -t 30 'ERROR' -- ./long-script.sh", file=sys.stderr)
         print("", file=sys.stderr)
         print("Run 'earlyexit --help' for more information.", file=sys.stderr)
         return 2
     
-    # Check if this looks like watch mode (no pattern specified, just command)
-    # Pattern is None and we have a command → watch mode
-    # OR pattern looks like a command name
-    common_commands = ['echo', 'cat', 'grep', 'ls', 'python', 'python3', 'node', 'bash', 'sh', 
-                       'npm', 'yarn', 'make', 'cmake', 'cargo', 'go', 'java', 'perl', 'ruby',
-                       'pytest', 'jest', 'mocha', 'terraform', 'docker', 'kubectl', 'git',
-                       'mist', 'aws', 'gcloud', 'az', 'curl', 'wget']
-    
-    # Also check if pattern looks like a path to an executable
-    # Or if it's a simple lowercase word (not all caps like ERROR/FAIL) with command args
-    import re as re_module
-    simple_word = args.pattern and re_module.match(r'^[a-z0-9_-]+$', args.pattern)  # lowercase only
-    has_command_args = args.command and len(args.command) > 0
-    
-    # Check if using new dual-pattern mode (success/error patterns)
-    has_dual_patterns = bool(getattr(args, 'success_pattern', None) or getattr(args, 'error_pattern', None))
-    
-    looks_like_command = (
-        (args.pattern is None and has_command_args and not has_dual_patterns) or  # ee -- command (but not with dual patterns)
-        args.pattern in common_commands or
-        (args.pattern and ('/' in args.pattern or args.pattern.startswith('.'))) or
-        (simple_word and has_command_args)  # Lowercase word + args = likely a command, not ERROR/FAIL pattern
-    )
-    
-    if looks_like_command:
+    # Watch mode is now EXPLICITLY opt-in via --watch flag
+    # This prevents accidental triggers and makes behavior predictable for AI agents
+    if args.watch:
         # Pattern looks like a command → This is watch mode!
         # Reconstruct the full command from pattern + command args
         if args.pattern:

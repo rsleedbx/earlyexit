@@ -8,12 +8,12 @@ alwaysApply: true
 
 ## 🤖 AI AGENTS: NEVER USE WATCH MODE
 
-**Watch mode requires HUMAN intervention** (Ctrl+C to teach patterns). AI agents MUST use **non-interactive mode** with explicit patterns.
+**Watch mode requires HUMAN intervention** (Ctrl+C to teach patterns). Watch mode is now **explicitly opt-in** with the `--watch` flag.
 
 **MANDATORY for AI agents:**
-1. ✅ **ALWAYS specify a pattern** (traditional OR success+error)
+1. ✅ **ALWAYS specify a pattern** (traditional OR success+error OR expect patterns)
 2. ✅ **ALWAYS use `--` separator** before command
-3. ❌ **NEVER use `-e` alone** (triggers watch mode)
+3. ❌ **NEVER use `--watch` flag** (requires human Ctrl+C)
 4. ❌ **NEVER append `2>&1`** to commands
 
 **Default pattern when unsure:**
@@ -23,6 +23,9 @@ ee -t 300 'ERROR' -- command
 
 # For success detection, use success patterns
 ee -t 300 --success-pattern 'SUCCESS|Completed' --error-pattern 'ERROR|FAIL' -- command
+
+# For code you control, use expect patterns (allowlist)
+ee --expect 'Step 1' --expect 'Step 2' --expect 'Done' --expect-all -- your-script.sh
 ```
 
 ## ❌ FORBIDDEN PATTERNS (DO NOT USE)
@@ -70,7 +73,7 @@ timeout 90 mist dml monitor --id xyz 2>&1
 **NEVER append `2>&1` to ee commands!**
 
 ```bash
-# ❌ WRONG - causes buffering and watch mode
+# ❌ WRONG - causes buffering
 ee -t 60 'ERROR' -- mist dml monitor --id xyz 2>&1
 
 # ✅ CORRECT - ee monitors stderr automatically
@@ -80,8 +83,7 @@ ee -t 60 'ERROR' -- mist dml monitor --id xyz
 **What happens with `2>&1`:**
 1. Redirects stderr to stdout (merges streams)
 2. Causes **block buffering** (same problem as timeout)
-3. May trigger **watch mode** (ee thinks no pattern specified)
-4. **ee already monitors both stdout AND stderr by default!**
+3. **ee already monitors both stdout AND stderr by default!**
 
 **Correct patterns for stderr:**
 ```bash
@@ -98,18 +100,18 @@ ee --stderr-idle-exit 1 'SUCCESS' -- command
 ee --max-repeat 5 --stuck-ignore-timestamps 'ERROR' -- command
 ```
 
-## 🚨 CRITICAL: Don't Use `-e` (Error Pattern) Alone!
+## 🚨 CRITICAL: Use Patterns Correctly!
 
-**NEVER use `-e` without a success pattern OR traditional pattern!**
+**ALWAYS use a traditional pattern OR both success+error patterns!**
 
 ```bash
-# ❌ WRONG - triggers watch mode, disables stuck detection and early exit
+# ❌ WRONG - incomplete pattern specification
 ee -t 120 --max-repeat 8 --stuck-ignore-timestamps \
   -e 'Error|Exception' --progress --unix-exit-codes \
   -- mist dml monitor --id xyz
 
-# Output: "Watch mode enabled (no pattern specified)"
-# Result: Stuck detection DOES NOT WORK, command runs until timeout!
+# Missing: No traditional pattern, no success pattern
+# Result: May not work as expected!
 
 # ✅ CORRECT Option 1: Traditional pattern (simplest, RECOMMENDED)
 ee -t 120 --max-repeat 8 --stuck-ignore-timestamps \
@@ -129,11 +131,10 @@ ee -t 120 --stderr-idle-exit 2 --max-repeat 8 \
   -- mist dml monitor --id xyz
 ```
 
-**Why `-e` alone triggers watch mode:**
-- ee requires: traditional pattern OR (success pattern + error pattern) OR timeout
-- `-e` alone = no traditional pattern, no success pattern → watch mode
-- Watch mode = different code path, stuck detection disabled
-- Result = command runs until timeout even with `--max-repeat`!
+**Pattern requirements:**
+- ee requires: traditional pattern OR (success pattern + error pattern)
+- `-e` alone = incomplete (no success pattern to pair with)
+- Always provide a complete pattern specification!
 
 ## 🤖 AI AGENT DECISION TREE (Non-Interactive Mode)
 
@@ -208,11 +209,13 @@ ee -t 300 -I 60 --max-repeat 5 \
   -- command
 ```
 
-**Step 3: Verify no watch mode**
+**Step 3: Verify pattern is specified**
 
-If you see `"Watch mode enabled"` in output:
-- ❌ You did it wrong! 
-- ✅ Fix: Add a traditional pattern OR both `-s` and `-e`
+Make sure you provided a pattern or pattern combination:
+- ✅ Traditional pattern: `ee 'ERROR' -- command`
+- ✅ Dual patterns: `ee -s 'SUCCESS' -e 'ERROR' -- command`
+- ✅ Expect patterns: `ee --expect 'pattern' -- command`
+- ❌ Watch mode: `ee --watch command` (DO NOT USE in automation)
 
 ## ✅ REQUIRED PATTERNS (USE THESE)
 ```bash
@@ -243,7 +246,7 @@ When the user's command contains these patterns, REPLACE with ee:
 | `timeout 1800 cmd 2>&1 \| tee log \| grep pattern` | `ee -t 1800 --file-prefix log 'pattern' -- cmd` |
 | `cmd 2>&1 \| tee log \| grep -A 3 pattern` | `ee 'pattern' -B 3 -A 10 --file-prefix log -- cmd` |
 | `cmd \| tee log \| head -100` | `ee 'pattern' --delay-exit-after-lines 100 -- cmd` |
-| `cmd \| tee log \| tail -100` | `ee 'ERROR' -- cmd` (or just `ee -- cmd` for watch mode) |
+| `cmd \| tee log \| tail -100` | `ee 'ERROR\|success' -- cmd` (or `ee --watch cmd` for interactive learning) |
 
 ## Real-World Examples
 
@@ -400,19 +403,19 @@ When Cursor suggests `cmd | tee | tail -100`, it's trying to show only the last 
 # ❌ WRONG: User sees nothing, cancels command
 terraform apply | tee log | tail -100
 
-# ✅ BETTER: Use watch mode - user can Ctrl+C or press Cancel to teach patterns
-ee terraform apply
-# When user presses Ctrl+C (or Cancel button in Cursor), ee shows interactive prompt:
+# ✅ BETTER: If pattern is known, use it!
+ee 'Error|FAIL|success' terraform apply
+
+# ✅ ALTERNATIVE: For humans doing discovery, use watch mode (interactive learning)
+ee --watch terraform apply
+# When user presses Ctrl+C, ee shows interactive prompt:
 # "What pattern should I watch for next time?"
 # User teaches it once, ee remembers forever
 
-# ✅ ALTERNATIVE: If pattern is known
-ee 'Error|FAIL' terraform apply
+# ❌ DON'T use watch mode in automation (AI agents, scripts, CI/CD)
 ```
 
-**Key insight:** `tail -100` means user doesn't know what to watch for. Use **watch mode** (`ee cmd`) so they can teach it interactively!
-
-**Works with Cursor's Cancel button:** When you press Cancel in Cursor's automated session, `ee` detects it (SIGTERM) and shows the same learning prompt as Ctrl+C.
+**Key insight:** `tail -100` means user doesn't know what to watch for. Humans can use **watch mode** (`ee --watch cmd`) for interactive learning, but AI agents should always use explicit patterns.
 
 ## Why This Matters
 
@@ -562,8 +565,8 @@ ee --stuck-pattern 'RUNNING\s+IDLE\s+\d+\s+N/A' --max-repeat 5 'SUCCESS' -- mist
 - ❌ NEVER use `timeout | tee`, `tee | grep`, `tee | head`
 - ❌ NEVER append `2>&1` to ee commands
 - ❌ NEVER use `-e` (error pattern) alone without `-s` (success pattern)
-- ❌ NEVER trigger watch mode (requires human Ctrl+C intervention)
-- ❌ NEVER omit the pattern (causes watch mode)
+- ❌ NEVER use `--watch` flag (requires human Ctrl+C intervention)
+- ❌ NEVER omit the pattern (provide traditional, dual, or expect patterns)
 
 ### ✅ ALWAYS DO (Required Patterns)
 - ✅ **ALWAYS specify a pattern**: `ee 'ERROR' -- command` OR `ee -s 'SUCCESS' -e 'ERROR' -- command`
@@ -603,6 +606,7 @@ ee -t 300 -I 60 --max-repeat 8 --stuck-ignore-timestamps \
   -- command
 ```
 
-### 🚨 If You See "Watch Mode Enabled" → YOU DID IT WRONG!
-- Fix: Add a traditional pattern `'ERROR'` OR both `-s` and `-e`
-- Watch mode = human intervention required = automation breaks
+### 🚨 If You See "Watch Mode Enabled" → YOU USED --watch FLAG!
+- Watch mode requires the `--watch` flag (explicitly opt-in)
+- For automation: Remove `--watch` and add a traditional pattern `'ERROR'` OR both `-s` and `-e` OR `--expect` patterns
+- Watch mode = human intervention required = NOT for automation
