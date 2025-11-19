@@ -131,7 +131,7 @@ ee --fd-pattern 3 'FATAL' --fd-pattern 4 'ALERT' -- \
 | **Multi-stream** | stdin only | ✅ Monitor multiple FDs (stderr + custom FDs 3+) |
 | **Stuck detection** | N/A | ✅ Repeating output, unchanged status, no progress |
 | **Real-time output** | `stdbuf` | ✅ Unbuffered by default |
-| **Auto-logging** | `tee` | ✅ Smart log files with compression |
+| **Auto-logging** | `tee` | ✅ Smart log files + compression (`-z` adds `.gz`) |
 | **Observability** | Custom scripts | ✅ JSON, progress, Unix exit codes |
 
 ### Core Differentiators vs grep/egrep/zgrep
@@ -557,9 +557,10 @@ ee -t 600 -I 30 -A 10 'Error' terraform apply
 ee 'Error' ./deploy.sh
 # Creates: ee-deploy_sh-12345.log
 
-# Compress logs
+# Compress logs (like tar -z)
 ee -z 'Error' ./long-job.sh
-# Creates: ee-long_job_sh-12345.log.gz
+# Creates: ee-long_job_sh-12345.log.gz (auto-adds .gz extension)
+# Original .log file removed after compression (saves 70-90% space)
 
 # Perfect for pipe chains - just like grep
 ee -q 'Error' terraform apply | grep 'aws_instance' | tee resources.txt
@@ -1033,6 +1034,86 @@ rble-308   -    0        0        0        | N/A             N/A             -  
 **Difference from idle timeout:**
 - `-I`/`--idle-timeout`: No **new** output (command silent)
 - `--max-repeat`: Command producing output but **not progressing** (same line repeating)
+
+---
+
+### Log Compression
+
+Automatically compress log files after command completes with `-z` (like `tar -z`, `rsync -z`):
+
+```bash
+# Basic compression (saves 70-90% space)
+ee -z 'ERROR' -- ./long-running-job.sh
+
+# Output:
+# 📝 Logging to:
+#    stdout: /tmp/ee-long_running_job-12345.log
+#    stderr: /tmp/ee-long_running_job-12345.errlog
+# [... command output ...]
+# 🗜️  Compressed: /tmp/ee-long_running_job-12345.log.gz (1.2 MB → 150 KB)
+# 🗜️  Compressed: /tmp/ee-long_running_job-12345.errlog.gz (45 KB → 8 KB)
+```
+
+**How it works (like `tar -z`):**
+
+| Tool | Flag | Behavior |
+|------|------|----------|
+| `tar` | `-z` | Creates `.tar.gz` archive |
+| `rsync` | `-z` | Compresses during transfer |
+| `gzip` | (default) | Adds `.gz` extension |
+| **`ee`** | **`-z`** | **Adds `.gz` extension, removes original** |
+
+**File naming:**
+
+```bash
+# Without compression
+ee --file-prefix /tmp/mylog 'ERROR' -- command
+# Creates: /tmp/mylog.log, /tmp/mylog.errlog
+
+# With compression (-z)
+ee -z --file-prefix /tmp/mylog 'ERROR' -- command
+# Creates: /tmp/mylog.log.gz, /tmp/mylog.errlog.gz
+# Original .log files automatically removed after compression
+```
+
+**Comparison with other tools:**
+
+```bash
+# ❌ Old way: Manual piping
+command 2>&1 | tee log.txt
+gzip log.txt  # Creates log.txt.gz
+
+# ❌ tar: Must specify archive name
+tar -czf archive.tar.gz directory/
+
+# ✅ ee: Automatic compression with -z
+ee -z 'ERROR' -- command
+# Automatically creates timestamped .log.gz files
+```
+
+**Best practices:**
+
+1. **Use with timeouts** for automatic cleanup:
+   ```bash
+   # Logs auto-compressed when timeout enabled
+   ee -z -t 1800 'ERROR' -- long-job
+   ```
+
+2. **Custom log names** for organized archives:
+   ```bash
+   # Predictable filenames for archiving
+   ee -z --file-prefix /var/log/jobs/nightly-sync 'ERROR' -- sync.sh
+   # Creates: /var/log/jobs/nightly-sync.log.gz
+   ```
+
+3. **Compression settings**:
+   - Uses gzip level 6 (balanced speed/compression)
+   - Typically achieves 70-90% space savings
+   - Original files removed after successful compression
+
+**Exit code:** Compression failures don't affect command exit code (warning printed to stderr)
+
+---
 
 #### Advanced: `--stuck-pattern` for Partial Line Matching
 
