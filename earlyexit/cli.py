@@ -2488,19 +2488,14 @@ Exit codes (Unix convention, --unix-exit-codes):
             print("Run 'earlyexit --help' for more information.", file=sys.stderr)
             return 2
         else:
-            # has_command but no pattern/timeout - must specify one
-            # Construct the command for the error message
-            cmd_display = ' '.join(args.command[:3]) + ('...' if len(args.command) > 3 else '')
-            print(f"❌ Error: No pattern or timeout specified for command: {cmd_display}", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("You have several options:", file=sys.stderr)
-            print(f"  1. Add a pattern:      ee 'ERROR' {cmd_display}", file=sys.stderr)
-            print(f"  2. Add a timeout:      ee -t 300 {cmd_display}", file=sys.stderr)
-            print(f"  3. Use watch mode:     ee --watch {cmd_display}", file=sys.stderr)
-            print(f"  4. Use dual patterns:  ee -s 'SUCCESS' -e 'ERROR' {cmd_display}", file=sys.stderr)
-            print("", file=sys.stderr)
-            print("Run 'ee --help' for more information.", file=sys.stderr)
-            return 2
+            # has_command but no pattern/timeout - apply default timeout
+            args.timeout = 1800  # Default 30 minutes for 'ee command'
+            if not args.quiet:
+                print(f"ℹ️  No pattern specified (default timeout: 1800s)", file=sys.stderr)
+            
+            no_pattern_mode = True
+            args.pattern = '(?!.*)'  # Negative lookahead that always fails
+            original_pattern = 'NONE'
     
     # Handle special "no pattern" keywords
     if args.pattern in ['-', 'NONE', 'NOPATTERN']:
