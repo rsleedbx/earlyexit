@@ -1171,6 +1171,15 @@ def run_command_mode(args, default_pattern: Pattern, use_color: bool, telemetry_
             'shell': False,
         }
         
+        # Set environment variables for unbuffering (inherits parent env, then overrides)
+        # This ensures child processes (multiprocessing, subprocesses) also unbuffer
+        import os as os_module
+        env = os_module.environ.copy()
+        env['PYTHONUNBUFFERED'] = '1'  # Python: unbuffer stdout/stderr
+        env['RUBY_FLUSH'] = '1'        # Ruby: auto-flush output
+        env['PERLIO'] = ':unix'        # Perl: unbuffered I/O
+        subprocess_kwargs['env'] = env
+        
         # If we have custom FDs, we need to use preexec_fn to set them up
         if fd_pipes:
             def setup_fds():
