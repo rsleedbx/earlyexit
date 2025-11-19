@@ -47,6 +47,57 @@ def timeout_handler(signum, frame):
     raise TimeoutError("Timeout exceeded")
 
 
+def parse_time(time_str: str) -> float:
+    """
+    Parse time string with optional suffix (like timeout/sleep commands)
+    
+    Supported formats:
+    - '30' or '30s' = 30 seconds
+    - '5m' = 5 minutes = 300 seconds
+    - '2h' = 2 hours = 7200 seconds
+    - '1d' = 1 day = 86400 seconds
+    - '1.5m' = 1.5 minutes = 90 seconds
+    
+    Args:
+        time_str: Time string (e.g., '30', '5m', '2h', '1d')
+    
+    Returns:
+        Time in seconds as float
+    
+    Raises:
+        ValueError: If format is invalid
+    """
+    time_str = str(time_str).strip()
+    
+    # Try to parse as plain number first
+    try:
+        return float(time_str)
+    except ValueError:
+        pass
+    
+    # Parse with suffix
+    suffix_map = {
+        's': 1,        # seconds
+        'm': 60,       # minutes
+        'h': 3600,     # hours
+        'd': 86400,    # days
+    }
+    
+    # Extract number and suffix
+    import re
+    match = re.match(r'^([\d.]+)([smhd])$', time_str.lower())
+    if not match:
+        raise ValueError(f"Invalid time format: {time_str}. Expected: number[smhd] (e.g., '30s', '5m', '2h', '1d')")
+    
+    value, suffix = match.groups()
+    try:
+        num = float(value)
+    except ValueError:
+        raise ValueError(f"Invalid number in time format: {value}")
+    
+    return num * suffix_map[suffix]
+
+
 def normalize_line_for_comparison(line: str, strip_timestamps: bool = True, stuck_pattern: str = None) -> str:
     """
     Normalize a line for comparison to detect stuck/repeated output.
@@ -2215,8 +2266,8 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Save output to log files. Behavior: (1) No extension → PREFIX.log/PREFIX.errlog, '
                             '(2) Ends with .log or .out → exact filename + .err for stderr. '
                             'Examples: /tmp/test → test.log/test.errlog; /tmp/test.log → test.log/test.err')
-    parser.add_argument('-F', '--first-output-timeout', type=float, metavar='SECONDS',
-                       help='Timeout if first output not seen within N seconds (startup detection)')
+    parser.add_argument('-F', '--first-output-timeout', type=str, metavar='DURATION',
+                       help='Timeout if first output not seen within N seconds (startup detection). Supports: 30, 30s, 5m, 2h, 1d')
     parser.add_argument('-z', '--gzip', action='store_true',
                        help='Compress log files with gzip after command completes (like tar -z, rsync -z). Saves 70-90% space.')
     parser.add_argument('-i', '--ignore-case', action='store_true',
@@ -2227,8 +2278,8 @@ Exit codes (Unix convention, --unix-exit-codes):
                        help='Pattern indicating successful completion (exits with code 0)')
     parser.add_argument('-e', '--error-pattern', metavar='PATTERN', dest='error_pattern',
                        help='Pattern indicating error/failure (exits with code 1)')
-    parser.add_argument('-I', '--idle-timeout', type=float, metavar='SECONDS',
-                       help='Timeout if no output for N seconds (stall detection)')
+    parser.add_argument('-I', '--idle-timeout', type=str, metavar='DURATION',
+                       help='Timeout if no output for N seconds (stall detection). Supports: 30, 30s, 5m, 2h, 1d')
     parser.add_argument('-v', '--invert-match', action='store_true',
                        help='Invert match - select non-matching lines')
     parser.add_argument('-n', '--line-number', action='store_true',
@@ -2298,8 +2349,8 @@ Exit codes (Unix convention, --unix-exit-codes):
     parser.add_argument('--stdout', dest='match_stderr', action='store_const', 
                        const='stdout', default='both',
                        help='Match pattern against stdout only (command mode only)')
-    parser.add_argument('-t', '--timeout', type=float, metavar='SECONDS',
-                       help='Overall timeout in seconds (default: no timeout)')
+    parser.add_argument('-t', '--timeout', type=str, metavar='DURATION',
+                       help='Overall timeout. Supports: 30, 30s, 5m, 2h, 1d (default: no timeout)')
     parser.add_argument('-u', '--unbuffered', action='store_true', default=True,
                        help='Force unbuffered stdout/stderr for subprocess (DEFAULT, like stdbuf -o0 -e0). Ensures real-time output.')
     parser.add_argument('--buffered', dest='unbuffered', action='store_false',
@@ -2370,6 +2421,29 @@ Exit codes (Unix convention, --unix-exit-codes):
         if args.command is None:
             args.command = []
         args.command.extend(unknown)
+    
+    # Parse time strings with suffixes (like timeout/sleep commands)
+    # Convert '5m' → 300.0, '2h' → 7200.0, etc.
+    try:
+        if args.timeout:
+            args.timeout = parse_time(args.timeout)
+    except ValueError as e:
+        print(f"❌ Error in --timeout: {e}", file=sys.stderr)
+        return 2
+    
+    try:
+        if args.idle_timeout:
+            args.idle_timeout = parse_time(args.idle_timeout)
+    except ValueError as e:
+        print(f"❌ Error in --idle-timeout: {e}", file=sys.stderr)
+        return 2
+    
+    try:
+        if args.first_output_timeout:
+            args.first_output_timeout = parse_time(args.first_output_timeout)
+    except ValueError as e:
+        print(f"❌ Error in --first-output-timeout: {e}", file=sys.stderr)
+        return 2
     
     # Handle case where pattern looks like a command: ee mist validate --all
     # If pattern is a simple lowercase word (no regex chars, not all caps like ERROR)
