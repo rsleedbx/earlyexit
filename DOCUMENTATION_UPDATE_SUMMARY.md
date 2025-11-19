@@ -56,7 +56,7 @@ ee -Z 'ERROR' < app.log.gz              # Compressed files (like zgrep)
 **Added new subsection: "grep/zgrep Compatible"**
 - ✅ Drop-in for single file usage
 - ✅ All common flags: `-i`, `-A`, `-B`, `-C`, `-w`, `-x`
-- ✅ Compressed input: `-Z` (auto-detect)
+- ✅ Decompress input: `-Z` (auto-detect gzip/bzip2/xz)
 - ✅ `EARLYEXIT_OPTIONS` env var (like `GREP_OPTIONS`)
 
 **Added new subsection: "Unique Capabilities"**
