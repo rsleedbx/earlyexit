@@ -2439,8 +2439,10 @@ Exit codes (Unix convention, --unix-exit-codes):
     no_pattern_mode = False
     original_pattern = args.pattern
     
-    # Treat 'NONE' (from -- preprocessing) as None
+    # Treat 'NONE' (from -- preprocessing) as None, but remember it was from --
+    used_separator = False
     if args.pattern == 'NONE':
+        used_separator = True  # User explicitly used 'ee -- command' syntax
         args.pattern = None
     
     if args.pattern is None:
@@ -2453,13 +2455,19 @@ Exit codes (Unix convention, --unix-exit-codes):
             # Using dual-pattern mode (success/error patterns) - set dummy pattern to avoid watch mode
             args.pattern = '__DUAL_PATTERN_MODE__'
             original_pattern = '__DUAL_PATTERN_MODE__'
-        elif has_timeout:
-            # Timeout provided, pattern optional - use timeout-only mode
+        elif has_timeout or used_separator:
+            # Timeout provided (or -- separator used), pattern optional - use timeout-only mode
+            # If user used 'ee -- command' with no timeout, apply a default timeout
+            if used_separator and not has_timeout:
+                args.timeout = 1800  # Default 30 minutes for 'ee -- command'
+                if not args.quiet:
+                    print(f"ℹ️  Using -- separator with no pattern (default timeout: 1800s)", file=sys.stderr)
+            
             no_pattern_mode = True
             args.pattern = '(?!.*)'  # Negative lookahead that always fails
             original_pattern = 'NONE'
-            if not args.quiet:
-                # Show which timeout is active
+            if not args.quiet and has_timeout:
+                # Show which timeout is active (if explicitly specified)
                 timeout_info = []
                 if args.timeout:
                     timeout_info.append(f"overall: {args.timeout}s")
