@@ -2362,6 +2362,22 @@ Exit codes (Unix convention, --unix-exit-codes):
             args.command = []
         args.command.extend(unknown)
     
+    # Handle case where pattern looks like a command: ee mist validate --all
+    # If pattern is a simple lowercase word (no regex chars, not all caps like ERROR)
+    # AND there are command arguments, treat pattern as part of command
+    if args.pattern and args.command:
+        import re as re_module
+        # Check if pattern looks like a command (lowercase word, no special regex chars)
+        is_simple_word = re_module.match(r'^[a-z][a-z0-9_-]*$', args.pattern)
+        # Common command names that should never be treated as patterns
+        known_commands = ['mist', 'databricks', 'kubectl', 'terraform', 'docker', 'aws', 'gcloud', 'az', 
+                         'python', 'python3', 'node', 'bash', 'sh', 'npm', 'yarn', 'cargo', 'go', 'java']
+        
+        if is_simple_word or args.pattern in known_commands:
+            # Pattern looks like a command - move it to the command list
+            args.command.insert(0, args.pattern)
+            args.pattern = None
+    
     # Set default for match_stderr if not specified (parse_known_args doesn't set defaults properly for store_const)
     if not hasattr(args, 'match_stderr') or args.match_stderr is None:
         args.match_stderr = 'both'
@@ -2459,11 +2475,24 @@ Exit codes (Unix convention, --unix-exit-codes):
             print("Provide either:", file=sys.stderr)
             print("  1. A pattern: earlyexit 'ERROR' -- command", file=sys.stderr)
             print("  2. A timeout: earlyexit -t 30 -- command", file=sys.stderr)
-            print("  3. A command to watch: earlyexit command (watch mode, learns from you)", file=sys.stderr)
+            print("  3. Watch mode: earlyexit --watch command", file=sys.stderr)
             print("", file=sys.stderr)
             print("Run 'earlyexit --help' for more information.", file=sys.stderr)
             return 2
-        # else: has_command but no pattern/timeout - will enter watch mode below
+        else:
+            # has_command but no pattern/timeout - must specify one
+            # Construct the command for the error message
+            cmd_display = ' '.join(args.command[:3]) + ('...' if len(args.command) > 3 else '')
+            print(f"❌ Error: No pattern or timeout specified for command: {cmd_display}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("You have several options:", file=sys.stderr)
+            print(f"  1. Add a pattern:      ee 'ERROR' {cmd_display}", file=sys.stderr)
+            print(f"  2. Add a timeout:      ee -t 300 {cmd_display}", file=sys.stderr)
+            print(f"  3. Use watch mode:     ee --watch {cmd_display}", file=sys.stderr)
+            print(f"  4. Use dual patterns:  ee -s 'SUCCESS' -e 'ERROR' {cmd_display}", file=sys.stderr)
+            print("", file=sys.stderr)
+            print("Run 'ee --help' for more information.", file=sys.stderr)
+            return 2
     
     # Handle special "no pattern" keywords
     if args.pattern in ['-', 'NONE', 'NOPATTERN']:
